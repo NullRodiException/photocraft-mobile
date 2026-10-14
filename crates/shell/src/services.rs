@@ -19,6 +19,25 @@ pub struct ShellSettings {
     /// On a pen tablet, fingers on the canvas pan, pinch and tap undo/redo instead of painting.
     #[serde(default = "yes")]
     pub finger_navigates: bool,
+    /// Keep PhotoCraft's options bar under the top bar for every tool. Off, it only shows for
+    /// tools whose settings the side bar doesn't cover (selections, shapes, type, crop…).
+    #[serde(default)]
+    pub options_bar: bool,
+    /// The colour popover's picker.
+    #[serde(default)]
+    pub color_selector: ColorSelector,
+}
+
+/// How the colour popover picks a colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ColorSelector {
+    /// A hue ring around a saturation / brightness square.
+    #[default]
+    Square,
+    /// A hue ring around a hue / white / black triangle, with hue, saturation and value bars
+    /// below (Krita's Advanced Color Selector).
+    Triangle,
 }
 
 fn yes() -> bool {
@@ -27,7 +46,7 @@ fn yes() -> bool {
 
 impl Default for ShellSettings {
     fn default() -> Self {
-        Self { finger_navigates: true }
+        Self { finger_navigates: true, options_bar: false, color_selector: ColorSelector::Square }
     }
 }
 
@@ -138,11 +157,17 @@ mod tests {
     #[test]
     fn shell_settings_round_trip_and_default_to_finger_navigation() {
         let dir = temp_dir("shell");
-        assert_eq!(load_settings(Some(&dir)), ShellSettings { finger_navigates: true });
-        save_settings(Some(&dir), &ShellSettings { finger_navigates: false });
-        assert_eq!(load_settings(Some(&dir)), ShellSettings { finger_navigates: false });
+        assert_eq!(load_settings(Some(&dir)), ShellSettings { finger_navigates: true, options_bar: false, color_selector: ColorSelector::Square });
+        let changed = ShellSettings { finger_navigates: false, options_bar: true, color_selector: ColorSelector::Triangle };
+        save_settings(Some(&dir), &changed);
+        assert_eq!(load_settings(Some(&dir)), changed);
+        assert!(std::fs::read_to_string(dir.join(SHELL)).unwrap().contains("\"triangle\""));
+        std::fs::write(dir.join(SHELL), "{\"finger_navigates\":false}").unwrap();
+        let older = load_settings(Some(&dir));
+        assert!(!older.finger_navigates && !older.options_bar, "a field missing from an older file takes its default");
+        assert_eq!(older.color_selector, ColorSelector::Square);
         std::fs::write(dir.join(SHELL), "{}").unwrap();
-        assert!(load_settings(Some(&dir)).finger_navigates, "a field missing from an older file takes its default");
+        assert!(load_settings(Some(&dir)).finger_navigates);
         assert!(!has_preferences(Some(&dir)));
         std::fs::write(dir.join(PREFS), "{}").unwrap();
         assert!(has_preferences(Some(&dir)));

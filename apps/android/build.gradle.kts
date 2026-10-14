@@ -12,8 +12,11 @@ android {
         applicationId = "dev.photocraftmobile.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // `cargo xtask android` bumps the build number in `build-number` and passes it here, so
+        // each build is a new version that installs over the last one.
+        val build = (project.findProperty("buildNumber") as String?)?.toIntOrNull() ?: 1
+        versionCode = build
+        versionName = "0.1.$build"
     }
 
     sourceSets["main"].jniLibs.srcDirs("../../target/android/jniLibs")

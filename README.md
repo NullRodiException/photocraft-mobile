@@ -1,7 +1,8 @@
 # PhotoCraft Mobile
 
-O editor do [PhotoCraft](../photocraft) com um **seletor rápido de modos** (Vetor | Pixel | Foto),
-no estilo dos estúdios do Affinity. Este é o ponto de partida da versão Android.
+O editor do [PhotoCraft](../photocraft) numa **interface minimalista no estilo do Procreate**, com
+um **seletor rápido de modos** (Vetor | Pixel | Foto) no estilo dos estúdios do Affinity. Este é o
+ponto de partida da versão Android.
 
 O PhotoCraft é usado **como dependência por caminho** (`../photocraft/crates/*`) e nunca é
 modificado daqui. Tudo o que o seletor faz passa pela superfície pública dele (comandos e
@@ -18,19 +19,46 @@ estado da UI).
 Mover, Mão, Zoom, Girar Vista e Conta-gotas ficam em todos os modos. Cada modo lembra a última
 ferramenta usada nele, e o modo atual é salvo entre sessões.
 
-Para trocar de modo: clique no seletor no topo, ou use **Alt+1 / Alt+2 / Alt+3**. Em telas
-estreitas (menos de 700 pt, como o tablet em retrato), o seletor mostra só os ícones.
+Para trocar de modo: toque no seletor da barra superior, ou use **Alt+1 / Alt+2 / Alt+3**. Em
+telas estreitas (menos de 760 pt, como o tablet em retrato), a barra mostra só os ícones.
 
-## Barra de ações
+## A interface (`crates/shell/src/studio.rs`)
 
-À direita do seletor ficam botões grandes para quem não tem teclado:
+A barra de menus, a barra de ferramentas, a barra de status, o dock e as abas de documento do
+PhotoCraft ficam escondidos. No lugar deles:
+
+**Barra superior**, da esquerda para a direita:
 
 | Botão | O que faz |
 |---|---|
-| Desfazer / Refazer | `edit.undo` / `edit.redo` |
-| Encaixar na tela | `view.fitOnScreen` |
-| Foco | esconde e mostra a barra de ferramentas, a barra de opções e o dock (o Tab do Photoshop) |
-| Dedo (só no Android) | alterna entre "dedos navegam" (padrão) e "dedos desenham"; a escolha é salva |
+| Galeria | mostra e esconde a tela inicial (arquivos recentes, novo, abrir) |
+| Ações (engrenagem) | todos os menus do PhotoCraft em duas colunas (menus à esquerda, itens à direita), com busca; a categoria **Rápido** tem Novo, Abrir, Salvar, Exportar, Encaixar na tela, Tela cheia, "sempre mostrar a barra de opções", "dedos navegam" e Configurações |
+| Ajustes (varinha) | Imagem › Ajustes e o menu Filtro |
+| Seleção (laço) | as ferramentas de seleção do modo e o menu Selecionar |
+| Transformar (seta) | Transformação livre (`edit.freeTransform`); tocar de novo aplica |
+| Vetor / Pixel / Foto | o seletor de modos |
+| Todas as ferramentas (grade) | todas as ferramentas do modo; mostra o ícone da ferramenta ativa quando ela não é uma das três ao lado |
+| 3 ferramentas do modo | Pixel: Pincel, Borrar, Borracha · Vetor: Caneta, Retângulo, Texto · Foto: Recuperação, Carimbo, Subexposição. Tocar de novo na ferramenta de pincel ativa abre a **Biblioteca de pincéis** (grupos à esquerda, traços de prévia à direita) |
+| Camadas | abre e fecha o painel Camadas à direita |
+| Círculo de cor | o popover de **Cores**: seletor em **quadrado** (anel de matiz + saturação/brilho) ou em **triângulo** (anel + triângulo matiz/branco/preto e barras H/S/V, como o Advanced Color Selector do Krita), escolhido no cabeçalho e salvo; cor de frente e fundo (toque troca), cores recentes e "Mais…" (o seletor completo do PhotoCraft) |
+
+**Barra lateral** flutuando sobre o canvas: tamanho do pincel (escala logarítmica, 1 a 2500 px),
+o botão **modificar** (conta-gotas; tocar de novo volta para a ferramenta anterior), opacidade
+(do pincel, ou do preenchimento no Degradê e no Balde), desfazer e refazer. Enquanto um slider se
+move, um balão mostra o pincel no tamanho real na tela ou a porcentagem.
+
+**Popovers:** um por vez, pendurado no seu botão. Tocar fora fecha sem pintar no canvas; Esc
+também fecha.
+
+**Barra de opções do PhotoCraft:** só aparece para ferramentas cujas opções a barra lateral não
+cobre (seleções, formas, texto, corte, degradê, carimbo…) e durante uma transformação, edição de
+texto ou corte (para Aplicar / Cancelar). Ações › Rápido › "Sempre mostrar a barra de opções" a
+deixa fixa.
+
+**Painéis:** Camadas abre o dock só com o painel Camadas. Um painel aberto por Ações › Janela
+(Histórico, Navegador…) aparece no mesmo lugar.
+
+**Tela cheia:** Ações › Rápido › Tela cheia deixa só a imagem e um botão no canto para voltar.
 
 Ao entrar num modo:
 1. `window.workspace.*` abre os painéis do modo;
@@ -42,10 +70,11 @@ Ao entrar num modo:
 ```text
 crates/modes   lógica pura dos modos (sem UI, sem PhotoCraft): listas de ferramentas,
                workspace, memória da última ferramenta. Compila para qualquer alvo.
-crates/shell   ModeShell: embrulha o PhotocraftApp e desenha o seletor e a barra de ações (egui).
+crates/shell   ModeShell: embrulha o PhotocraftApp na interface (egui).
+               studio.rs: barra superior, barra lateral, popovers, seletores de cor.
                touch.rs: gestos de dedo no canvas (pan, pinça, desfazer/refazer).
                services.rs: serviços comuns (codecs, gravação atômica, configurações).
-               examples/snapshot.rs renderiza offscreen um PNG por modo.
+               examples/snapshot.rs renderiza offscreen um PNG por modo (e popovers).
 apps/desktop   executável `photocraft-mobile` (eframe/wgpu) para desenvolver no PC.
 apps/android   app Android: biblioteca nativa + MainActivity.java (GameActivity, Gradle).
 xtask          `cargo xtask android`: compila, empacota, assina, instala e abre o APK;
@@ -63,6 +92,9 @@ cargo run --release -p photocraft-mobile -- foto.jpg
 cargo test                                               # todos os testes
 cargo clippy --all-targets -- -D warnings
 cargo run --release -p photocraft-mobile-shell --example snapshot -- --out shots --size 1280x800
+# com um documento de exemplo e um popover aberto (actions, adjustments, selection, tools,
+# brushes, color); --layers abre o painel Camadas e --triangle usa o seletor de cor em triângulo
+cargo run --release -p photocraft-mobile-shell --example snapshot -- --out shots --new 1600x1200 --popover brushes
 ```
 
 O `Cargo.lock` começou como cópia do lock do PhotoCraft, para usar as mesmas versões testadas.
@@ -103,7 +135,14 @@ dele. Os PNGs são gerados por `cargo xtask icons` a partir de
 O `xtask` faz duas etapas. Primeiro, `cargo ndk` compila o `.so` (perfil `android-release`) para
 `target/android/jniLibs/<abi>/`. Depois, o projeto Gradle em `apps/android` (`gradlew
 assembleRelease`, AGP 8.7, `androidx.games:games-activity:4.4.0`) empacota tudo e assina com a
-chave de debug. O APK final é copiado para `target/android/photocraft-mobile.apk`.
+chave de debug.
+
+**Cada build é uma versão nova, num APK novo.** O número do último build fica em
+`apps/android/build-number` (versionado). O `xtask` usa o próximo número como `versionCode` (e
+`versionName` `0.1.<n>`), grava o APK em `target/android/photocraft-mobile-v<n>.apk` e só então
+atualiza o arquivo. Os APKs anteriores continuam lá. Um build sem arm64-v8a (só o emulador) sai
+como `photocraft-mobile-v<n>-x86_64.apk`. Como o `versionCode` sempre sobe, cada APK instala por
+cima do anterior.
 
 Requisitos:
 - Android SDK com `platform-tools`, `build-tools;35.0.0`, `platforms;android-35` e um NDK
@@ -180,8 +219,9 @@ Com a caneta, o dedo no canvas serve para navegar:
 | toque rápido com 2 dedos | desfazer |
 | toque rápido com 3 dedos | refazer |
 
-Fora do canvas (menus, painéis, barra) o dedo funciona normalmente. O botão do dedo na barra
-desliga isso para quem pinta com o dedo.
+Fora do canvas (menus, painéis, barras) o dedo funciona normalmente. Ações › Rápido › "Dedos
+navegam" desliga isso para quem pinta com o dedo. Segurar e deslizar (abaixo) não vale nas barras
+e popovers da interface, para que um toque lento num slider continue sendo um arraste.
 
 Como funciona:
 - O winit descarta o tipo de ferramenta. Por isso a `MainActivity` informa ao Rust, para cada
@@ -205,5 +245,6 @@ Como funciona:
   O Android encerra apps que usam memória demais. Tudo pode ser ajustado em Preferências › Desempenho.
 
 O que ainda falta no Android:
-- O botão Discord e a densidade dos menus e diálogos são do PhotoCraft e não mudam sem alterá-lo.
+- O botão Discord da tela inicial e a densidade dos menus e diálogos são do PhotoCraft e não mudam
+  sem alterá-lo.
 - Escolher pasta no seletor de arquivos.

@@ -30,6 +30,22 @@ pub enum Mode {
 /// Navigation and sampling tools every mode keeps.
 pub const COMMON_TOOLS: &[&str] = &["Move", "Hand", "Zoom", "RotateView", "Eyedropper"];
 
+/// Tools that make or edit a selection (pixels or paths), whatever mode lists them.
+pub const SELECTION_TOOLS: &[&str] = &[
+    "RectMarquee",
+    "EllipseMarquee",
+    "SingleRowMarquee",
+    "SingleColumnMarquee",
+    "Lasso",
+    "PolygonLasso",
+    "MagneticLasso",
+    "MagicWand",
+    "QuickSelection",
+    "ObjectSelection",
+    "PathSelection",
+    "DirectSelection",
+];
+
 const VECTOR_TOOLS: &[&str] = &[
     "Pen",
     "FreeformPen",
@@ -189,6 +205,20 @@ impl Mode {
             Mode::Pixel => "Brush",
             Mode::Photo => "SpotHealing",
         }
+    }
+
+    /// The three tools the top bar keeps one tap away, like Procreate's Brush, Smudge and Eraser.
+    pub fn quick_tools(self) -> [&'static str; 3] {
+        match self {
+            Mode::Vector => ["Pen", "Rectangle", "Type"],
+            Mode::Pixel => ["Brush", "Smudge", "Eraser"],
+            Mode::Photo => ["SpotHealing", "CloneStamp", "Dodge"],
+        }
+    }
+
+    /// The selection tools this mode shows, in toolbar order (the top bar's Selection button).
+    pub fn selection_tools(self) -> impl Iterator<Item = &'static str> {
+        self.tools().filter(|t| SELECTION_TOOLS.contains(t))
     }
 
     /// The tools this mode adds to [`COMMON_TOOLS`].

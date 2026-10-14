@@ -2,8 +2,11 @@
 //!
 //! Builds `apps/android` with cargo-ndk into `target/android/jniLibs/<abi>/`, then packages it
 //! with AndroidX GameActivity through the Gradle project in `apps/android` (`gradlew
-//! assembleRelease`, signed with the debug key). Output: `target/android/photocraft-mobile.apk`, or
-//! `photocraft-mobile-<abis>.apk` for a build without arm64-v8a (`--abi x86_64` for the emulator).
+//! assembleRelease`, signed with the debug key). Each build is a new version: the build number in
+//! `apps/android/build-number` goes up by one and becomes the `versionCode` (`versionName`
+//! `0.1.<n>`). Output: `target/android/photocraft-mobile-v<n>.apk`, or
+//! `photocraft-mobile-v<n>-<abis>.apk` for a build without arm64-v8a (`--abi x86_64` for the
+//! emulator); earlier APKs stay.
 //!
 //! Finds the SDK in `ANDROID_HOME`, `ANDROID_SDK_ROOT` or `%LOCALAPPDATA%\Android\Sdk`, and uses
 //! its newest NDK. Gradle runs on `JAVA_HOME` (JDK 17+).
@@ -85,6 +88,21 @@ fn abi_triple(abi: &str) -> Result<&'static str, String> {
     })
 }
 
+/// The last build number, in `apps/android/`; each `cargo xtask android` builds the next one.
+const BUILD_NUMBER: &str = "build-number";
+
+/// The build after the one recorded in the build-number file (`None` or garbage: the first, 1
+/// being the version built before the file existed).
+fn next_build_number(recorded: Option<&str>) -> u32 {
+    recorded.and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(1).saturating_add(1)
+}
+
+/// `photocraft-mobile-v7.apk`. A build without arm64 (the emulator) says which ABIs it has, so it
+/// is never mistaken for one that runs on phones and tablets.
+fn apk_name(build: u32, abis: &[String]) -> String {
+    if abis.iter().any(|a| a == "arm64-v8a") { format!("photocraft-mobile-v{build}.apk") } else { format!("photocraft-mobile-v{build}-{}.apk", abis.join("-")) }
+}
+
 fn android(args: &[String]) -> Result<(), String> {
     let flag = |f: &str| args.iter().any(|a| a == f);
     let abis: Vec<String> = args
@@ -122,14 +140,22 @@ fn android(args: &[String]) -> Result<(), String> {
         std::fs::copy(&built, dest.join(LIB)).map_err(|e| format!("{}: {e}", built.display()))?;
     }
 
-    // 2. The APK: GameActivity + the libraries.
+    // 2. The APK: GameActivity + the libraries, as the next build number (versionCode).
+    let number_file = gradle_dir.join(BUILD_NUMBER);
+    let build_number = next_build_number(std::fs::read_to_string(&number_file).ok().as_deref());
+    eprintln!("build {build_number} (version 0.1.{build_number})");
     let gradlew = gradle_dir.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
-    run(Command::new(&gradlew).current_dir(&gradle_dir).env("ANDROID_HOME", &sdk).args(["assembleRelease", "--console=plain", "--no-daemon"]))?;
+    run(Command::new(&gradlew).current_dir(&gradle_dir).env("ANDROID_HOME", &sdk).args([
+        "assembleRelease",
+        "--console=plain",
+        "--no-daemon",
+        &format!("-PbuildNumber={build_number}"),
+    ]))?;
     let built_apk = newest(&gradle_dir.join("build").join("outputs").join("apk").join("release"), |p| p.extension().is_some_and(|e| e == "apk"))?;
-    // A build without arm64 (the emulator) gets its own name, so it never replaces the one for phones and tablets.
-    let apk =
-        if abis.iter().any(|a| a == "arm64-v8a") { out.join("photocraft-mobile.apk") } else { out.join(format!("photocraft-mobile-{}.apk", abis.join("-"))) };
+    // Every build is a new file next to the earlier ones.
+    let apk = out.join(apk_name(build_number, &abis));
     std::fs::copy(&built_apk, &apk).map_err(|e| format!("{}: {e}", built_apk.display()))?;
+    std::fs::write(&number_file, format!("{build_number}\n")).map_err(|e| format!("{}: {e}", number_file.display()))?;
     let size = std::fs::metadata(&apk).map(|m| m.len()).unwrap_or(0);
     eprintln!("APK: {} ({:.1} MB)", apk.display(), size as f64 / 1_048_576.0);
 
@@ -180,4 +206,25 @@ fn icons() -> Result<(), String> {
         eprintln!("{} ({layer} px)", out.display());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_build_takes_the_next_number() {
+        assert_eq!(next_build_number(Some("3\n")), 4);
+        assert_eq!(next_build_number(Some(" 41 ")), 42);
+        assert_eq!(next_build_number(None), 2, "the first numbered build follows versionCode 1");
+        assert_eq!(next_build_number(Some("garbage")), 2);
+        assert_eq!(next_build_number(Some(&u32::MAX.to_string())), u32::MAX);
+    }
+
+    #[test]
+    fn apks_are_named_by_build() {
+        let abis = |s: &[&str]| s.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        assert_eq!(apk_name(4, &abis(&["arm64-v8a", "x86_64"])), "photocraft-mobile-v4.apk");
+        assert_eq!(apk_name(5, &abis(&["x86_64"])), "photocraft-mobile-v5-x86_64.apk");
+    }
 }

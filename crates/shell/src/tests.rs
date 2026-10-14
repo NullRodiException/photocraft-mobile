@@ -1,7 +1,9 @@
 use super::*;
+use egui::Color32;
 use photocraft_ui_egui::Services;
 use std::cell::RefCell;
 use std::rc::Rc;
+use studio::{Act, needs_options_bar};
 
 fn shell() -> ModeShell {
     ModeShell::new(PhotocraftApp::new(photocraft_engine::Session::new(), Services::default()), Modes::default())
@@ -92,6 +94,7 @@ fn alt_digits_switch_modes() {
 
 #[test]
 fn ink_reads_on_light_and_dark_fills() {
+    use studio::ink_on;
     assert_eq!(ink_on(Color32::from_rgb(0, 200, 230)), Color32::from_gray(16));
     assert_eq!(ink_on(Color32::from_rgb(30, 30, 30)), Color32::WHITE);
 }
@@ -107,17 +110,130 @@ fn ui_scale_is_about_a_quarter_larger_than_the_system() {
 }
 
 #[test]
-fn focus_hides_the_panels_and_brings_back_what_was_shown() {
+fn photocraft_chrome_is_hidden_and_focus_hides_the_rest() {
     let mut s = shell();
-    s.app.ui.panels.options_bar = false;
+    s.apply_chrome();
+    let p = &s.app.ui.panels;
+    assert!(!p.menu_bar && !p.toolbar && !p.status_bar && !p.rail && !p.dock, "PhotoCraft's own chrome is hidden");
+    let v = &s.app.ui.view;
+    assert!(v.hides_tabs() && !v.shows_scrollbars() && !v.hides_chrome(), "no tabs or scroll bars, but PhotoCraft's panels still draw");
+    s.studio.side = Some(SidePanel::Layers);
+    s.apply_chrome();
+    let p = &s.app.ui.panels;
+    assert!(p.dock && p.layers && !p.color && !p.history, "Layers opens the dock with just the Layers panel");
+    s.app.ui.tool = Tool::RectMarquee;
     s.toggle_focus();
     assert!(s.focused());
     let p = &s.app.ui.panels;
-    assert!(!p.toolbar && !p.options_bar && !p.dock);
+    assert!(!p.dock && !p.options_bar);
     s.toggle_focus();
     assert!(!s.focused());
     let p = &s.app.ui.panels;
-    assert!(p.toolbar && !p.options_bar && p.dock, "the options bar was hidden before Focus and stays hidden");
+    assert!(p.dock && p.layers && p.options_bar, "leaving Focus brings back the Layers panel and the options bar");
+}
+
+#[test]
+fn the_options_bar_shows_only_where_the_side_bar_falls_short() {
+    let mut s = shell();
+    s.app.ui.tool = Tool::Brush;
+    assert!(!needs_options_bar(&s.app));
+    s.apply_chrome();
+    assert!(!s.app.ui.panels.options_bar);
+    for tool in [Tool::RectMarquee, Tool::Type, Tool::Crop, Tool::Rectangle, Tool::Gradient, Tool::CloneStamp] {
+        s.app.ui.tool = tool;
+        assert!(needs_options_bar(&s.app), "{tool:?} needs its options");
+    }
+    s.app.ui.tool = Tool::Eraser;
+    s.settings.options_bar = true;
+    s.apply_chrome();
+    assert!(s.app.ui.panels.options_bar, "the setting keeps it for every tool");
+}
+
+#[test]
+fn a_panel_photocraft_opens_shows_in_the_dock_but_a_mode_switch_does_not() {
+    let ctx = egui::Context::default();
+    let mut s = shell();
+    s.apply_chrome();
+    // Window › History.
+    s.app.ui.panels.history = true;
+    s.apply_chrome();
+    assert_eq!(s.studio.side, Some(SidePanel::Window));
+    assert!(s.app.ui.panels.dock && s.app.ui.panels.history);
+    // A mode lays out its workspace (which opens panels) without opening the dock.
+    s.studio.side = None;
+    s.apply_chrome();
+    s.switch_to(&ctx, Mode::Photo).unwrap();
+    s.apply_chrome();
+    assert_eq!(s.studio.side, None);
+    assert!(!s.app.ui.panels.dock);
+}
+
+fn press_at(x: f32, y: f32, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton { pos: egui::pos2(x, y), button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE }
+}
+
+#[test]
+fn a_press_outside_the_popover_closes_it_without_reaching_the_canvas() {
+    let ctx = egui::Context::default();
+    PhotocraftApp::setup_context(&ctx, Default::default());
+    let mut s = shell();
+    // Draw once so the top bar has its place.
+    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| s.top_bar(ui));
+    out.textures_delta.clear();
+    s.toggle_popover(Popover::Tools);
+    assert_eq!(s.studio.popover, Some(Popover::Tools));
+    let mut events = vec![press_at(400.0, 400.0, true), egui::Event::PointerMoved(egui::pos2(410.0, 400.0)), press_at(410.0, 400.0, false)];
+    s.studio.filter(&mut events);
+    assert!(events.is_empty(), "the closing press never reaches the canvas: {events:?}");
+    assert_eq!(s.studio.popover, None);
+    // On the top bar the press goes through (it may open another popover), but the button of
+    // the popover it closed doesn't open it again.
+    s.toggle_popover(Popover::Color);
+    let mut events = vec![press_at(20.0, 10.0, true)];
+    s.studio.filter(&mut events);
+    assert_eq!(events.len(), 1);
+    assert_eq!(s.studio.popover, None);
+    s.toggle_popover(Popover::Color);
+    assert_eq!(s.studio.popover, None, "the click that closed it doesn't reopen it");
+    s.toggle_popover(Popover::Actions);
+    assert_eq!(s.studio.popover, Some(Popover::Actions), "another button opens its popover");
+}
+
+#[test]
+fn modify_borrows_the_eyedropper_and_gives_the_tool_back() {
+    let ctx = egui::Context::default();
+    let mut s = shell();
+    s.app.ui.tool = Tool::Smudge;
+    s.apply_act(&ctx, Act::Modify);
+    assert_eq!(s.app.ui.tool, Tool::Eyedropper);
+    s.apply_act(&ctx, Act::Modify);
+    assert_eq!(s.app.ui.tool, Tool::Smudge);
+}
+
+#[test]
+fn colors_from_the_disc_set_the_foreground() {
+    let ctx = egui::Context::default();
+    let mut s = shell();
+    s.apply_act(&ctx, Act::Color([1.0, 0.0, 0.0]));
+    let fg = s.app.session.tools.foreground;
+    assert!((fg[0] - 1.0).abs() < 1e-3 && fg[1].abs() < 1e-3 && fg[2].abs() < 1e-3, "{fg:?}");
+    s.toggle_popover(Popover::Color);
+    s.apply_act(&ctx, Act::SwapColors);
+    assert_ne!(s.app.session.tools.foreground, fg);
+}
+
+#[test]
+fn layers_toggles_the_dock() {
+    let ctx = egui::Context::default();
+    let mut s = shell();
+    s.apply_act(&ctx, Act::Layers);
+    assert_eq!(s.studio.side, Some(SidePanel::Layers));
+    s.apply_chrome();
+    assert!(s.app.ui.panels.dock && s.app.ui.panels.layers);
+    s.apply_act(&ctx, Act::Layers);
+    s.apply_chrome();
+    assert_eq!(s.studio.side, None);
+    assert!(!s.app.ui.panels.dock);
 }
 
 /// A shell with a 400 × 300 document whose view is at 200 % on a 2× display.
@@ -228,4 +344,44 @@ fn one_arrow_key_is_one_step_in_a_photocraft_value_field() {
     let key = |pressed| egui::Event::Key { key: Key::ArrowDown, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
     value_field_frame(&ctx, &mut v, vec![key(true), key(false)]);
     assert_eq!(v, 99.0, "focused: {:?}", ctx.memory(|m| m.focused()));
+}
+
+#[test]
+fn tool_grids_drop_the_word_tool() {
+    use studio::short_tool_name;
+    assert_eq!(short_tool_name("Move Tool"), "Move");
+    assert_eq!(short_tool_name("Ferramenta Laço poligonal"), "Laço poligonal");
+    assert_eq!(short_tool_name("Herramienta pincel"), "Pincel");
+    assert_eq!(short_tool_name("Brush"), "Brush");
+    assert_eq!(short_tool_name("Tool"), "Tool");
+}
+
+#[test]
+fn the_triangle_maps_its_corners_to_hue_white_and_black() {
+    use studio::{triangle_sv, triangle_weights};
+    let (hue, white, black) = (egui::pos2(100.0, 60.0), egui::pos2(0.0, 60.0), egui::pos2(50.0, -27.0));
+    let sv = |p| triangle_sv(triangle_weights(p, hue, white, black), 0.5);
+    let close = |(s, v): (f32, f32), want: (f32, f32)| (s - want.0).abs() < 1e-3 && (v - want.1).abs() < 1e-3;
+    assert!(close(sv(hue), (1.0, 1.0)), "{:?}", sv(hue));
+    assert!(close(sv(white), (0.0, 1.0)), "{:?}", sv(white));
+    assert_eq!(sv(black).1, 0.0);
+    assert_eq!(sv(black).0, 0.5, "black keeps the saturation it had");
+    assert!(close(sv(egui::pos2(50.0, 60.0)), (0.5, 1.0)), "halfway from white to the hue");
+    // Outside the triangle it clamps onto it; nonsense stays in range.
+    let (s, v) = sv(egui::pos2(500.0, 500.0));
+    assert!((0.0..=1.0).contains(&s) && (0.0..=1.0).contains(&v));
+    let (s, v) = sv(egui::pos2(f32::NAN, 0.0));
+    assert!((0.0..=1.0).contains(&s) && (0.0..=1.0).contains(&v));
+}
+
+#[test]
+fn the_color_selector_choice_is_saved() {
+    let ctx = egui::Context::default();
+    let saved: Rc<RefCell<Vec<ColorSelector>>> = Rc::default();
+    let sink = saved.clone();
+    let mut s = shell().with_settings(ShellSettings::default(), Box::new(move |st| sink.borrow_mut().push(st.color_selector)));
+    assert_eq!(s.settings.color_selector, ColorSelector::Square, "the square stays the default");
+    s.apply_act(&ctx, Act::ColorSelector(ColorSelector::Triangle));
+    assert_eq!(s.settings.color_selector, ColorSelector::Triangle);
+    assert_eq!(*saved.borrow(), [ColorSelector::Triangle]);
 }

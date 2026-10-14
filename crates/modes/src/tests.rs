@@ -99,3 +99,17 @@ fn saved_state_round_trips_and_tolerates_old_or_partial_files() {
 fn fresh_state_starts_in_pixel() {
     assert_eq!(Modes::default().mode(), Mode::Pixel);
 }
+
+#[test]
+fn quick_and_selection_tools_belong_to_their_mode() {
+    for mode in Mode::ALL {
+        for t in mode.quick_tools() {
+            assert!(mode.shows(t), "{mode:?} has quick tool {t} that its toolbar hides");
+        }
+        let selection: Vec<&str> = mode.selection_tools().collect();
+        assert!(!selection.is_empty(), "{mode:?} has no selection tool");
+        assert!(selection.iter().all(|t| mode.shows(t) && SELECTION_TOOLS.contains(t)));
+    }
+    assert!(Mode::Vector.selection_tools().any(|t| t == "PathSelection"));
+    assert!(!Mode::Pixel.selection_tools().any(|t| t == "Brush"));
+}

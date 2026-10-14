@@ -1,8 +1,10 @@
 //! # photocraft-mobile-shell
 //!
-//! [`ModeShell`] wraps PhotoCraft's [`PhotocraftApp`] (unchanged) and adds a touch-friendly bar
-//! above the editor: the Vector | Pixel | Photo mode switcher (also Alt+1 / Alt+2 / Alt+3) and
-//! large Undo, Redo, Fit on Screen and Focus buttons, for a tablet without a keyboard.
+//! [`ModeShell`] wraps PhotoCraft's [`PhotocraftApp`] (unchanged) in a minimal, Procreate-style
+//! chrome for a tablet without a keyboard ([`studio`]): a slim top bar (Gallery, Actions,
+//! Adjustments, Selection, Transform, the Vector | Pixel | Photo mode switcher, the mode's main
+//! tools, Layers and the colour), a floating side bar (size, eyedropper, opacity, undo, redo) and
+//! popovers that reach every menu and tool. Alt+1 / Alt+2 / Alt+3 switch modes.
 //!
 //! A mode switch only goes through PhotoCraft's public surface: the Window › Workspace command
 //! lays out the panels, `edit.toolbar` hides the tools the mode doesn't use, and the remembered
@@ -19,19 +21,21 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-use egui::{Align, Color32, Event, FontId, Key, Layout, Margin, Modifiers, Sense, Stroke, StrokeKind, Vec2, vec2};
+use egui::{Event, Key, Modifiers, Stroke, StrokeKind, Vec2, vec2};
 use photocraft_mobile_modes::{Mode, Modes};
 use photocraft_ui_egui::theme::Tokens;
 use photocraft_ui_egui::{PhotocraftApp, Tool};
 use serde_json::json;
 
 pub use photocraft_mobile_modes;
-pub use services::ShellSettings;
+pub use services::{ColorSelector, ShellSettings};
+pub use studio::{BAR_HEIGHT, COMPACT_BELOW, Popover, SidePanel};
 pub use touch::ToolKind;
 
 pub mod pen;
 pub mod scrub;
 pub mod services;
+pub mod studio;
 pub mod touch;
 
 /// Called with the new state after every switch, to save it.
@@ -43,11 +47,6 @@ pub type TouchKindFn = Box<dyn Fn(u64) -> Option<ToolKind>>;
 /// Platform input added before anything else sees a frame's raw input (pen hover, pen samples),
 /// with the current points-per-pixel.
 pub type InputHookFn = Box<dyn FnMut(&mut egui::RawInput, f32)>;
-
-/// Height of the bar, in points.
-pub const BAR_HEIGHT: f32 = 40.0;
-/// Narrower than this (points), the mode switcher shows icons without labels.
-pub const COMPACT_BELOW: f32 = 700.0;
 
 /// Every PhotoCraft tool, by the name `Tool::from_name` and `edit.toolbar` read.
 pub fn tool_names() -> Vec<String> {
@@ -81,18 +80,7 @@ pub fn ui_scale_for(native: f32) -> Option<&'static str> {
     UI_SCALES.iter().min_by(|a, b| (a.1 - target).abs().total_cmp(&(b.1 - target).abs())).map(|s| s.0)
 }
 
-/// A bar button's action, run after the bar is drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Action {
-    Mode(Mode),
-    Undo,
-    Redo,
-    Fit,
-    Focus,
-    FingerNavigates(bool),
-}
-
-/// PhotoCraft with the mode switcher and touch bar on top.
+/// PhotoCraft in the studio chrome (top bar, side bar, popovers).
 pub struct ModeShell {
     pub app: PhotocraftApp,
     pub modes: Modes,
@@ -105,8 +93,10 @@ pub struct ModeShell {
     pending_pan: Vec2,
     /// A finger tap waiting for the next `logic` pass (finger count).
     pending_tap: Option<usize>,
-    /// Toolbar, options bar and dock as they were before Focus hid them.
-    focus_saved: Option<[bool; 3]>,
+    /// Focus (full screen): only the image and a button to come back.
+    focus: bool,
+    /// The top bar, side bar and popovers.
+    pub studio: studio::Studio,
     /// The saved mode is applied once, after PhotoCraft's first `logic` pass.
     applied: bool,
     input_hook: Option<InputHookFn>,
@@ -133,7 +123,8 @@ impl ModeShell {
             router: touch::TouchRouter::default(),
             pending_pan: Vec2::ZERO,
             pending_tap: None,
-            focus_saved: None,
+            focus: false,
+            studio: studio::Studio::default(),
             applied: false,
             input_hook: None,
             scrub: scrub::ValueScrub::default(),
@@ -180,6 +171,7 @@ impl ModeShell {
         if let Some(tool) = Tool::from_name(&plan.tool) {
             self.app.ui.tool = tool;
         }
+        self.chrome_relayout();
         if let Some(save) = self.save.as_mut() {
             save(&self.modes);
         }
@@ -199,32 +191,25 @@ impl ModeShell {
         }
     }
 
-    /// Focus is on: the toolbar, options bar and dock are hidden.
+    /// Focus is on: only the image shows.
     pub fn focused(&self) -> bool {
-        self.focus_saved.is_some()
+        self.focus
     }
 
-    /// Hide the toolbar, options bar and dock (Photoshop's Tab), or bring back what was shown.
+    /// Hide every bar, panel and popover (full screen), or bring them back.
     pub fn toggle_focus(&mut self) {
-        let p = &mut self.app.ui.panels;
-        match self.focus_saved.take() {
-            Some([toolbar, options_bar, dock]) => {
-                p.toolbar = toolbar;
-                p.options_bar = options_bar;
-                p.dock = dock;
-            }
-            None => {
-                self.focus_saved = Some([p.toolbar, p.options_bar, p.dock]);
-                p.toolbar = false;
-                p.options_bar = false;
-                p.dock = false;
-            }
-        }
+        self.focus = !self.focus;
+        self.studio.popover = None;
+        self.apply_chrome();
     }
 
     /// Turn finger navigation on or off, and save it.
     pub fn set_finger_navigates(&mut self, on: bool) {
         self.settings.finger_navigates = on;
+        self.save_settings();
+    }
+
+    fn save_settings(&mut self) {
         if let Some(save) = self.save_settings.as_mut() {
             save(&self.settings);
         }
@@ -266,76 +251,19 @@ impl ModeShell {
         }
     }
 
-    /// Alt+1 / Alt+2 / Alt+3, taken before PhotoCraft's own shortcuts see them. Left alone while a
-    /// text field has the keyboard, so typing isn't interrupted.
+    /// Alt+1 / Alt+2 / Alt+3, taken before PhotoCraft's own shortcuts see them, and Esc closing a
+    /// popover. Left alone while a text field has the keyboard, so typing isn't interrupted.
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        if self.studio.popover.is_some() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.studio.popover = None;
+            return;
+        }
         if ctx.egui_wants_keyboard_input() {
             return;
         }
         let picked = Mode::ALL.into_iter().find(|&mode| ctx.input_mut(|i| i.consume_key(Modifiers::ALT, shortcut_key(mode))));
         if let Some(mode) = picked {
             self.switch_logged(ctx, mode);
-        }
-    }
-
-    /// The bar: mode switcher on the left, touch actions on the right.
-    pub fn bar(&mut self, ui: &mut egui::Ui) {
-        let t = Tokens::get(ui.ctx());
-        let lang = photocraft_ui_egui::i18n::current().code();
-        let pt = lang.to_ascii_lowercase().starts_with("pt");
-        let tr = |en: &'static str, pt_text: &'static str| if pt { pt_text } else { en };
-        let current = self.modes.mode();
-        let focused = self.focused();
-        let fingers = self.touch_kind.is_some().then_some(self.settings.finger_navigates);
-        let mut action = None;
-        egui::Panel::top("photocraft-mobile-modes")
-            .resizable(false)
-            .exact_size(BAR_HEIGHT)
-            .frame(egui::Frame::NONE.fill(t.chrome).inner_margin(Margin::symmetric(8, 5)))
-            .show(ui, |ui| {
-                let compact = ui.available_width() < COMPACT_BELOW;
-                ui.horizontal_centered(|ui| {
-                    if let Some(mode) = segmented(ui, &t, current, lang, compact) {
-                        action = Some(Action::Mode(mode));
-                    }
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        const B: f32 = 30.0;
-                        let button = |ui: &mut egui::Ui, icon: &str, on: bool, tip: &str| photocraft_ui_egui::icons::button(ui, icon, B, on, tip).clicked();
-                        if let Some(on) = fingers {
-                            let (icon, tip) = if on {
-                                ("hand", tr("Fingers navigate the canvas (tap to let them paint)", "Dedos navegam no canvas (toque para desenharem)"))
-                            } else {
-                                ("brush", tr("Fingers paint (tap so they navigate)", "Dedos desenham (toque para navegarem)"))
-                            };
-                            if button(ui, icon, on, tip) {
-                                action = Some(Action::FingerNavigates(!on));
-                            }
-                        }
-                        if button(ui, "panels-top-left", focused, tr("Focus: hide or show the panels", "Foco: esconder ou mostrar os painéis")) {
-                            action = Some(Action::Focus);
-                        }
-                        if button(ui, "maximize-2", false, tr("Fit on Screen", "Encaixar na tela")) {
-                            action = Some(Action::Fit);
-                        }
-                        ui.add_space(8.0);
-                        if button(ui, "redo-2", false, tr("Redo (three-finger tap)", "Refazer (toque com três dedos)")) {
-                            action = Some(Action::Redo);
-                        }
-                        if button(ui, "undo-2", false, tr("Undo (two-finger tap)", "Desfazer (toque com dois dedos)")) {
-                            action = Some(Action::Undo);
-                        }
-                    });
-                });
-            });
-        let ctx = ui.ctx().clone();
-        match action {
-            Some(Action::Mode(mode)) if mode != current => self.switch_logged(&ctx, mode),
-            Some(Action::Undo) => self.command(&ctx, "edit.undo"),
-            Some(Action::Redo) => self.command(&ctx, "edit.redo"),
-            Some(Action::Fit) => self.command(&ctx, "view.fitOnScreen"),
-            Some(Action::Focus) => self.toggle_focus(),
-            Some(Action::FingerNavigates(on)) => self.set_finger_navigates(on),
-            _ => {}
         }
     }
 }
@@ -346,59 +274,6 @@ fn shortcut_key(mode: Mode) -> Key {
         Mode::Pixel => Key::Num2,
         Mode::Photo => Key::Num3,
     }
-}
-
-/// Black or white, whichever reads better on `fill`.
-fn ink_on(fill: Color32) -> Color32 {
-    let l = 0.2126 * f32::from(fill.r()) + 0.7152 * f32::from(fill.g()) + 0.0722 * f32::from(fill.b());
-    if l > 150.0 { Color32::from_gray(16) } else { Color32::WHITE }
-}
-
-/// A pill of mode buttons (icons only when `compact`); returns the one clicked.
-fn segmented(ui: &mut egui::Ui, t: &Tokens, current: Mode, lang: &str, compact: bool) -> Option<Mode> {
-    const H: f32 = 28.0;
-    const ICON: f32 = 15.0;
-    const PAD: f32 = 12.0;
-    const GAP: f32 = 6.0;
-    let font = FontId::proportional(13.0);
-    let mut picked = None;
-    let galleys: Vec<_> = Mode::ALL.iter().map(|m| ui.painter().layout_no_wrap(m.label(lang).to_string(), font.clone(), Color32::WHITE)).collect();
-    let widths: Vec<f32> = galleys.iter().map(|g| if compact { PAD + ICON + PAD } else { PAD + ICON + GAP + g.size().x + PAD }).collect();
-    let total: f32 = widths.iter().sum::<f32>() + 4.0;
-    let (outer, _) = ui.allocate_exact_size(vec2(total, H + 4.0), Sense::hover());
-    let radius = (H + 4.0) / 2.0;
-    ui.painter().rect(outer, radius, t.field, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    let mut x = outer.min.x + 2.0;
-    for ((mode, galley), w) in Mode::ALL.into_iter().zip(galleys).zip(widths) {
-        let rect = egui::Rect::from_min_size(egui::pos2(x, outer.min.y + 2.0), vec2(w, H));
-        x += w;
-        let id = ui.id().with(("photocraft-mobile-mode", mode.id()));
-        let resp = ui.interact(rect, id, Sense::click());
-        let selected = mode == current;
-        let (fill, ink) = if selected {
-            (t.accent, ink_on(t.accent))
-        } else if resp.hovered() {
-            (t.hover, t.text)
-        } else {
-            (Color32::TRANSPARENT, t.text_dim)
-        };
-        if fill != Color32::TRANSPARENT {
-            ui.painter().rect_filled(rect, H / 2.0, fill);
-        }
-        let icon = egui::Rect::from_min_size(egui::pos2(rect.min.x + PAD, rect.center().y - ICON / 2.0), vec2(ICON, ICON));
-        photocraft_ui_egui::icons::paint(ui, icon, mode.icon(), ICON, ink);
-        if !compact {
-            let text_pos = egui::pos2(icon.max.x + GAP, rect.center().y - galley.size().y / 2.0);
-            ui.painter().galley(text_pos, galley, ink);
-        }
-        let label = mode.label(lang);
-        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label));
-        let resp = resp.on_hover_text(format!("{label} (Alt+{})", mode.index() + 1));
-        if resp.clicked() {
-            picked = Some(mode);
-        }
-    }
-    picked
 }
 
 impl eframe::App for ModeShell {
@@ -420,6 +295,8 @@ impl eframe::App for ModeShell {
             hook(raw_input, ctx.pixels_per_point());
         }
         self.tapped = false;
+        // A press outside the open popover closes it, without painting under it.
+        self.studio.filter(&mut raw_input.events);
         if let Some(kind) = self.touch_kind.as_ref() {
             let now = raw_input.time.unwrap_or_else(|| ctx.input(|i| i.time));
             // A finger navigates only over an open image: the start screen's buttons, and windows,
@@ -433,7 +310,9 @@ impl eframe::App for ModeShell {
             self.tapped = raw_input.events.iter().any(|e| matches!(e, Event::PointerButton { pressed: false, .. }));
             let field_focused = ctx.memory(|m| m.focused()).is_some_and(|id| egui::text_edit::TextEditState::load(ctx, id).is_some());
             let navigating = self.router.active();
-            let scrubbable = |p: egui::Pos2| !navigating && !on_canvas(p);
+            // The shell's sliders and lists take a slow press as a drag, not a field scrub.
+            let studio = &self.studio;
+            let scrubbable = |p: egui::Pos2| !navigating && !on_canvas(p) && !studio.owns(p);
             let scrub = self.scrub.filter(&mut raw_input.events, now, &scrubbable, field_focused);
             if scrub.began.is_some() {
                 self.tapped = false;
@@ -458,8 +337,18 @@ impl eframe::App for ModeShell {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        self.bar(ui);
+        let ctx = ui.ctx().clone();
+        self.apply_chrome();
+        if !self.focus {
+            self.top_bar(ui);
+        }
         self.app.ui(ui, frame);
+        if self.focus {
+            self.focus_exit(&ctx);
+        } else {
+            self.side_bar(&ctx);
+            self.popover(&ctx);
+        }
         if self.touch_kind.is_some() {
             self.touch_keyboard_and_scrub(ui.ctx());
         }
@@ -507,7 +396,7 @@ impl ModeShell {
         arrow(egui::pos2(track.center().x, track.bottom() - 14.0), false);
         let reach = H / 2.0 - 30.0;
         let knob = egui::pos2(track.center().x, track.center().y - offset.clamp(-reach, reach));
-        painter.circle(knob, 11.0, t.accent, Stroke::new(2.0, ink_on(t.accent)));
+        painter.circle(knob, 11.0, t.accent, Stroke::new(2.0, studio::ink_on(t.accent)));
         ctx.request_repaint();
     }
 }
