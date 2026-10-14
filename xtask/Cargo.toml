@@ -4,7 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
-description = "Project tasks: `cargo xtask android` builds, signs, installs and runs the Android APK"
+description = "Project tasks: `cargo xtask android` builds, signs, installs and runs the Android APK; `cargo xtask icons` renders the launcher icon"
 
 [lints]
 workspace = true
+
+[dependencies]
+# Renders PhotoCraft's SVG app icon into the Android launcher PNGs (`cargo xtask icons`).
+resvg = { version = "0.45", default-features = false }

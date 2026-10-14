@@ -1,8 +1,13 @@
 //! PhotoCraft Mobile for Android.
 //!
-//! A `cdylib` loaded by AndroidX `GameActivity` (no Java code of our own): `android_main` runs eframe on
-//! wgpu (Vulkan, or GLES where there is no Vulkan) with the same [`ModeShell`] as the desktop app.
+//! A `cdylib` loaded by `MainActivity` (a small AndroidX `GameActivity` subclass that adds immersive
+//! full screen and palm rejection): `android_main` runs eframe on wgpu (Vulkan, or GLES where there
+//! is no Vulkan) with the same [`ModeShell`] as the desktop app.
 //! Build and install with `cargo xtask android --install --run` (see the README).
+//!
+//! Pen pressure: GameActivity copies only X and Y from each motion event unless more axes are
+//! enabled, so without [`AndroidApp::enable_motion_axis`] every contact reaches winit (and from
+//! there PhotoCraft's stylus input, as `egui::Event::Touch { force }`) at pressure 0.
 //!
 //! On any other target this crate is empty, so the workspace still builds everywhere.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -13,6 +18,7 @@ mod android {
     use photocraft_mobile_shell::{ModeShell, services};
     use photocraft_ui_egui::PhotocraftApp;
     use winit::platform::android::activity::AndroidApp;
+    use winit::platform::android::activity::input::Axis;
 
     /// The GameActivity entry point (called by android-activity's glue on its own thread).
     // The unsafe part is only the unmangled export: the glue finds the function by this name.
@@ -24,6 +30,8 @@ mod android {
         // App-private storage: preferences and the saved mode.
         let config_dir = app.internal_data_path();
         log::info!("starting; settings in {config_dir:?}");
+        // S Pen (and any stylus) pressure; see the crate docs.
+        app.enable_motion_axis(Axis::Pressure);
         let options = eframe::NativeOptions { android_app: Some(app), renderer: eframe::Renderer::Wgpu, ..Default::default() };
         let result = eframe::run_native(
             "PhotoCraft Mobile",

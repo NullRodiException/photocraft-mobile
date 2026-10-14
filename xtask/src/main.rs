@@ -6,6 +6,10 @@
 //!
 //! Finds the SDK in `ANDROID_HOME`, `ANDROID_SDK_ROOT` or `%LOCALAPPDATA%\Android\Sdk`, and uses
 //! its newest NDK. Gradle runs on `JAVA_HOME` (JDK 17+).
+//!
+//! `cargo xtask icons` renders PhotoCraft's app icon (`../photocraft/assets/app-icon/photocraft.svg`)
+//! into the foreground layer of the Android adaptive icon, one PNG per screen density, under
+//! `apps/android/src/main/res/mipmap-*/`. The PNGs are committed; rerun it when the icon changes.
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
@@ -13,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 const PACKAGE: &str = "dev.photocraftmobile.app";
-const ACTIVITY: &str = "com.google.androidgamesdk.GameActivity";
+const ACTIVITY: &str = ".MainActivity";
 const LIB: &str = "libphotocraft_mobile.so";
 /// Must match `minSdk` in apps/android/build.gradle.kts.
 const MIN_SDK: &str = "26";
@@ -23,7 +27,8 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("android") => android(args.get(1..).unwrap_or_default()),
-        _ => Err("usage: cargo xtask android [--abi arm64-v8a,x86_64] [--install] [--run] [--logcat]".into()),
+        Some("icons") => icons(),
+        _ => Err("usage: cargo xtask android [--abi arm64-v8a,x86_64] [--install] [--run] [--logcat]\n       cargo xtask icons".into()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -133,6 +138,43 @@ fn android(args: &[String]) -> Result<(), String> {
     }
     if flag("--logcat") {
         run(Command::new(&adb).args(["logcat", "-s", "photocraft-mobile:*", "RustStdoutStderr:*", "AndroidRuntime:E", "DEBUG:*"]))?;
+    }
+    Ok(())
+}
+
+/// Adaptive icon geometry (dp): the 108 × 108 foreground layer, of which launchers show the
+/// middle 72 × 72 through their mask (circle, squircle, rounded square).
+const ICON_LAYER_DP: f32 = 108.0;
+/// How much of the layer the PhotoCraft tile covers: inside the 66 dp safe zone, so a round mask
+/// (Pixel, many Samsung themes) keeps the ears and tail tips; only the blue corners fall outside.
+const ICON_TILE_DP: f32 = 64.0;
+/// Android screen densities and their scale over mdpi.
+const DENSITIES: [(&str, f32); 5] = [("mdpi", 1.0), ("hdpi", 1.5), ("xhdpi", 2.0), ("xxhdpi", 3.0), ("xxxhdpi", 4.0)];
+
+fn icons() -> Result<(), String> {
+    use resvg::{tiny_skia, usvg};
+    let root = root()?;
+    let source = root.join("..").join("photocraft").join("assets").join("app-icon").join("photocraft.svg");
+    let svg = std::fs::read_to_string(&source).map_err(|e| format!("{}: {e}", source.display()))?;
+    // The master clips the tile to a rounded square; the launcher applies its own shape instead.
+    let full_bleed = svg.replacen(r#" clip-path="url(#t)""#, "", 1);
+    if full_bleed == svg {
+        return Err(format!("{}: the rounded-square clip wasn't found; check the icon still has `clip-path=\"url(#t)\"`", source.display()));
+    }
+    let tree = usvg::Tree::from_str(&full_bleed, &usvg::Options::default()).map_err(|e| format!("{}: {e}", source.display()))?;
+    let res = root.join("apps").join("android").join("src").join("main").join("res");
+    for (density, scale) in DENSITIES {
+        let layer = (ICON_LAYER_DP * scale).round();
+        let tile = ICON_TILE_DP * scale;
+        let mut pixmap = tiny_skia::Pixmap::new(layer as u32, layer as u32).ok_or("couldn't allocate the icon")?;
+        let fit = tile / tree.size().width().max(tree.size().height());
+        let offset = (layer - tile) / 2.0;
+        resvg::render(&tree, tiny_skia::Transform::from_scale(fit, fit).post_translate(offset, offset), &mut pixmap.as_mut());
+        let dir = res.join(format!("mipmap-{density}"));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let out = dir.join("ic_launcher_foreground.png");
+        pixmap.save_png(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+        eprintln!("{} ({layer} px)", out.display());
     }
     Ok(())
 }

@@ -1,5 +1,5 @@
 // Packages the Rust library (built by `cargo xtask android` into target/android/jniLibs) with
-// AndroidX GameActivity. There is no Java or Kotlin source of our own.
+// AndroidX GameActivity, through MainActivity.java (immersive full screen, palm rejection).
 plugins {
     id("com.android.application") version "8.7.3"
 }

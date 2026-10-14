@@ -77,7 +77,14 @@ cargo xtask android                          # APK para arm64-v8a + x86_64 em ta
 cargo xtask android --abi x86_64 --run       # só x86_64 (emulador), instala e abre
 cargo xtask android --abi arm64-v8a --run    # celular real (depuração USB ligada)
 cargo xtask android --logcat                 # depois de --run: mostra os logs do app
+cargo xtask icons                            # regenera o ícone a partir do SVG do PhotoCraft
 ```
+
+O ícone é o do PhotoCraft (a kitsune), como ícone adaptativo: fundo azul `#2F7BF5` e a arte na
+camada da frente (`res/mipmap-*/ic_launcher_foreground.png`), que o launcher recorta no formato
+dele. Os PNGs são gerados por `cargo xtask icons` a partir de
+`../photocraft/assets/app-icon/photocraft.svg` e ficam versionados. Licença e atribuição em
+`ATTRIBUTION.md`.
 
 O `xtask` faz duas etapas. Primeiro, `cargo ndk` compila o `.so` (perfil `android-release`) para
 `target/android/jniLibs/<abi>/`. Depois, o projeto Gradle em `apps/android` (`gradlew
@@ -93,6 +100,21 @@ Requisitos:
 
 O único `unsafe` do projeto é a exportação do `android_main` (`#[unsafe(no_mangle)]`). Por isso o
 crate Android usa `unsafe_code = "deny"` em vez de `forbid` e libera só esse item.
+
+### Caneta (S Pen)
+
+- **Pressão:** a GameActivity só copia X e Y de cada toque, a menos que outros eixos sejam
+  ligados. O `android_main` liga `Axis::Pressure`, e a pressão chega ao PhotoCraft como a força do
+  toque (`egui::Event::Touch { force }`), o mesmo caminho do Windows. Pressão no tamanho e na
+  opacidade, e a curva de pressão em Preferências › Ferramentas, funcionam como no desktop.
+- **Rejeição de palma** (`MainActivity.java`): enquanto a caneta encosta ou paira sobre a tela, e
+  por 0,5 s depois, toques que começam com dedo ou palma são descartados. Com a caneta longe, os
+  dedos funcionam normalmente.
+- **Tela cheia imersiva** (`MainActivity.java`): barra de status, barra de navegação e a taskbar
+  do One UI ficam escondidas. Um deslize a partir da borda as mostra por um instante.
+- **Ainda não:** inclinação e rotação da caneta, o botão lateral da S Pen e o cursor do pincel
+  enquanto a caneta paira. O winit 0.30 descarta esses dados no Android, então vão exigir ler os
+  eventos na `MainActivity` e repassá-los ao Rust.
 
 O que ainda falta no Android:
 - Abrir e salvar arquivos pelo Storage Access Framework (o rfd não existe no Android). Hoje dá
