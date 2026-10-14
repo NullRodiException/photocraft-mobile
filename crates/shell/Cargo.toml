@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 photocraft-mobile-modes = { workspace = true }
+photocraft-engine = { workspace = true }
 photocraft-ui-egui = { workspace = true }
 photocraft-doc = { workspace = true }
 photocraft-io = { workspace = true }
@@ -22,6 +23,5 @@ serde_json = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
-photocraft-engine = { workspace = true }
 egui = { workspace = true, features = ["default_fonts"] }
 egui_kittest = { workspace = true, features = ["wgpu", "eframe", "snapshot"] }

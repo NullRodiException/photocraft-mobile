@@ -385,3 +385,51 @@ fn the_color_selector_choice_is_saved() {
     assert_eq!(s.settings.color_selector, ColorSelector::Triangle);
     assert_eq!(*saved.borrow(), [ColorSelector::Triangle]);
 }
+
+#[test]
+fn the_sensitivity_slider_moves_one_middle_point_and_reads_back() {
+    use studio::{curve_for_sensitivity, sensitivity_of};
+    assert_eq!(curve_for_sensitivity(0.0, [0.0, 1.0]), vec![[0.0, 0.0], [1.0, 1.0]], "the middle is linear");
+    let soft = curve_for_sensitivity(1.0, [0.0, 1.0]);
+    assert_eq!(soft.len(), 3);
+    assert!(soft[1][1] > soft[1][0], "soft gives more than it gets: {soft:?}");
+    let hard = curve_for_sensitivity(-0.5, [0.0, 1.0]);
+    assert!(hard[1][1] < hard[1][0], "{hard:?}");
+    for s in [-1.0, -0.5, 0.0, 0.4, 1.0] {
+        assert!((sensitivity_of(&curve_for_sensitivity(s, [0.0, 1.0])) - s).abs() < 1e-4, "{s}");
+    }
+    // The ends' outputs stay, and the middle never leaves them.
+    let lifted = curve_for_sensitivity(1.0, [0.2, 0.7]);
+    assert_eq!((lifted[0], lifted[2]), ([0.0, 0.2], [1.0, 0.7]));
+    assert!((0.2..=0.7).contains(&lifted[1][1]));
+    assert_eq!(curve_for_sensitivity(f32::NAN, [0.0, 1.0]).len(), 2);
+    // PhotoCraft's presets read as soft and hard.
+    assert!(sensitivity_of(&[[0.0, 0.0], [0.3, 0.6], [1.0, 1.0]]) > 0.3);
+    assert!(sensitivity_of(&[[0.0, 0.0], [0.6, 0.3], [1.0, 1.0]]) < -0.3);
+}
+
+#[test]
+fn stored_curves_are_cleaned_before_editing() {
+    use studio::sanitize_curve;
+    assert_eq!(sanitize_curve(vec![]), vec![[0.0, 0.0], [1.0, 1.0]]);
+    assert_eq!(sanitize_curve(vec![[1.0, 1.0], [f32::NAN, 0.5], [0.0, -2.0]]), vec![[0.0, 0.0], [1.0, 1.0]]);
+    assert_eq!(sanitize_curve(vec![[0.5, 0.5]; 40]).len(), 16);
+}
+
+#[test]
+fn pen_sensitivity_is_saved_in_photocraft_preferences_and_the_brush() {
+    let ctx = egui::Context::default();
+    let mut s = shell();
+    let soft = vec![[0.0, 0.0], [0.3, 0.6], [1.0, 1.0]];
+    s.apply_act(&ctx, Act::PressureCurve(soft.clone()));
+    assert_eq!(s.app.session.prefs().tools.pressure_curve, soft);
+    s.apply_act(&ctx, Act::UseTabletPressure(false));
+    assert!(!s.app.session.prefs().tools.use_tablet_pressure);
+    s.app.ui.tool = Tool::Brush;
+    let was = s.app.session.tools.brush.pressure_size;
+    s.apply_act(&ctx, Act::PressureSize(!was));
+    assert_eq!(s.app.session.tools.brush.pressure_size, !was);
+    let was = s.app.session.tools.brush.pressure_opacity;
+    s.apply_act(&ctx, Act::PressureOpacity(!was));
+    assert_eq!(s.app.session.tools.brush.pressure_opacity, !was);
+}

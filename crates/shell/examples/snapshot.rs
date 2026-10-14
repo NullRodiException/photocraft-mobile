@@ -7,7 +7,7 @@
 //!
 //! `--mode vector|pixel|photo` captures just that mode. `--new 1600x1200` starts from a new
 //! document with a few strokes on it. With a document, `--popover actions|adjustments|selection|
-//! tools|brushes|color` also captures that popover open, and `--layers` the Layers panel.
+//! tools|brushes|color|pressure` also captures that popover open, and `--layers` the Layers panel.
 //! `--triangle` uses the triangle colour selector.
 
 use photocraft_mobile_shell::photocraft_mobile_modes::{Mode, Modes};
@@ -31,6 +31,7 @@ fn popover(name: &str) -> Option<Popover> {
         "tools" => Popover::Tools,
         "brushes" => Popover::Brushes,
         "color" => Popover::Color,
+        "pressure" => Popover::Pressure,
         _ => return None,
     })
 }

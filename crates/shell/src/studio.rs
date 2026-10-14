@@ -58,7 +58,7 @@ const SIDE_BAR_TOOLS: &[Tool] = &[
     Tool::Eyedropper,
 ];
 
-/// A popover hanging from a top bar button.
+/// A popover hanging from a top bar or side bar button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Popover {
     Actions,
@@ -67,6 +67,8 @@ pub enum Popover {
     Tools,
     Brushes,
     Color,
+    /// Pen sensitivity: the pressure curve and what pressure drives (the side bar's gauge).
+    Pressure,
 }
 
 /// What the right dock shows.
@@ -98,6 +100,14 @@ pub(crate) enum Act {
     SwapColors,
     MoreColors,
     ColorSelector(ColorSelector),
+    /// Preferences › Tools › Pressure Curve.
+    PressureCurve(Vec<[f32; 2]>),
+    /// Preferences › Tools › Use Tablet Pressure.
+    UseTabletPressure(bool),
+    /// The active tool's brush: pressure drives its size.
+    PressureSize(bool),
+    /// The active tool's brush: pressure drives its opacity.
+    PressureOpacity(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,6 +157,10 @@ pub struct Studio {
     modify_return: Option<Tool>,
     /// The side bar slider being dragged and its thumb (the preview bubble follows it).
     dragging: Option<(Slider, Pos2)>,
+    /// The pressure curve being dragged (saved to the preferences when the drag ends), and the
+    /// point held.
+    curve_edit: Option<Vec<[f32; 2]>>,
+    curve_point: Option<usize>,
 }
 
 impl Default for Studio {
@@ -170,6 +184,8 @@ impl Default for Studio {
             recent_colors: Vec::new(),
             modify_return: None,
             dragging: None,
+            curve_edit: None,
+            curve_point: None,
         }
     }
 }
@@ -192,7 +208,9 @@ impl Studio {
             {
                 self.popover = None;
                 self.closed_by_press = Some((open, false));
-                self.swallowing = !self.top_rect.contains(pos);
+                // The top bar and the side bar take the press: a button there may open another
+                // popover, a slider starts moving.
+                self.swallowing = !self.top_rect.contains(pos) && !self.side_rect.is_some_and(|r| r.contains(pos));
             }
             let lift = matches!(
                 event,
@@ -612,6 +630,20 @@ impl ModeShell {
         recent.truncate(RECENT_COLORS);
     }
 
+    /// Whether pressure drives the active tool's brush size and opacity (`None`: unchanged).
+    fn brush_pressure(&mut self, size: Option<bool>, opacity: Option<bool>) {
+        photocraft_ui_egui::paint_mouse::sync_tool_brush(&mut self.app);
+        let before = self.app.session.tools.brush.clone();
+        let mut after = before.clone();
+        if let Some(on) = size {
+            after.pressure_size = on;
+        }
+        if let Some(on) = opacity {
+            after.pressure_opacity = on;
+        }
+        photocraft_ui_egui::brush_panel::commit(&mut self.app, &before, &after);
+    }
+
     pub(crate) fn apply_act(&mut self, ctx: &egui::Context, act: Act) {
         match act {
             Act::Mode(mode) => {
@@ -713,6 +745,19 @@ impl ModeShell {
                 self.settings.color_selector = kind;
                 self.save_settings();
             }
+            Act::PressureCurve(points) => {
+                // PhotoCraft saves its preferences itself once they change.
+                if let Err(e) = self.app.run("prefs.set", json!({ "path": "tools.pressureCurve", "value": points })) {
+                    log::warn!("pressure curve: {e}");
+                }
+            }
+            Act::UseTabletPressure(on) => {
+                if let Err(e) = self.app.run("prefs.set", json!({ "path": "tools.useTabletPressure", "value": on })) {
+                    log::warn!("tablet pressure: {e}");
+                }
+            }
+            Act::PressureSize(on) => self.brush_pressure(Some(on), None),
+            Act::PressureOpacity(on) => self.brush_pressure(None, Some(on)),
         }
     }
 
@@ -834,7 +879,8 @@ impl ModeShell {
         let mut opacity = if fill { self.app.ui.tool_options.fill_opacity / 100.0 } else { brush.opacity };
         const BUTTON: f32 = 36.0;
         const GAP: f32 = 10.0;
-        let fixed = 3.0 * BUTTON + 5.0 * GAP + 18.0;
+        // Modify, pen sensitivity, undo and redo, between and below the two sliders.
+        let fixed = 4.0 * BUTTON + 6.0 * GAP + 18.0;
         let slider_h = ((canvas.height() - 48.0).min(560.0) - fixed).max(140.0) / 2.0;
         let slider_h = slider_h.min(200.0);
         let total = 2.0 * slider_h + fixed;
@@ -842,6 +888,8 @@ impl ModeShell {
         let mut acts = Vec::new();
         let (mut size_changed, mut opacity_changed) = (false, false);
         let mut dragging = None;
+        let mut pressure_button = None;
+        let pressure_open = self.studio.popover == Some(Popover::Pressure);
         let resp = egui::Area::new(Id::new("photocraft-mobile-side-bar")).order(Order::Middle).fixed_pos(pos).show(ctx, |ui| {
             egui::Frame::NONE
                 .fill(t.chrome)
@@ -881,6 +929,12 @@ impl ModeShell {
                         if r.is_pointer_button_down_on() && (brushlike || fill) {
                             dragging = Some((Slider::Opacity, thumb));
                         }
+                        // Pen sensitivity, always one tap away.
+                        let r = bar_icon(ui, &t, "gauge", pressure_open, tr("Pen sensitivity", "Sensibilidade da caneta"));
+                        if r.clicked() {
+                            acts.push(Act::Popover(Popover::Pressure));
+                        }
+                        pressure_button = Some(r.rect);
                         if bar_icon(ui, &t, "undo-2", false, tr("Undo (two-finger tap)", "Desfazer (toque com dois dedos)")).clicked() {
                             acts.push(Act::Command("edit.undo".into()));
                         }
@@ -892,6 +946,10 @@ impl ModeShell {
         });
         let bar = resp.response.rect;
         self.studio.side_rect = Some(bar);
+        if let Some(r) = pressure_button {
+            self.studio.buttons.retain(|(p, _)| *p != Popover::Pressure);
+            self.studio.buttons.push((Popover::Pressure, r));
+        }
         if brushlike {
             if size_changed {
                 brush.size = (size * MAX_BRUSH_SIZE.ln()).exp().round().clamp(1.0, MAX_BRUSH_SIZE);
@@ -973,6 +1031,9 @@ impl ModeShell {
         let screen = ctx.content_rect();
         // Hung from its button; the Brush Library of a tool the bar doesn't show, from All tools.
         let button = |p: Popover| self.studio.buttons.iter().find(|(b, _)| *b == p).map(|(_, r)| *r);
+        // Pen sensitivity hangs beside its side bar button; opened from Actions without a
+        // document (no side bar), it hangs under the top bar like the others.
+        let beside = which == Popover::Pressure && button(which).is_some();
         let anchor =
             button(which).or_else(|| button(Popover::Tools)).unwrap_or(Rect::from_min_size(screen.right_top() - vec2(60.0, 0.0), vec2(40.0, BAR_HEIGHT)));
         let want = match which {
@@ -982,10 +1043,19 @@ impl ModeShell {
             Popover::Tools => vec2(452.0, 600.0),
             Popover::Brushes => vec2(600.0, 660.0),
             Popover::Color => vec2(340.0, 660.0),
+            Popover::Pressure => vec2(370.0, 700.0),
         };
-        let top = anchor.bottom() + 12.0;
-        let size = vec2(want.x.min(screen.width() - 16.0), want.y.min(screen.bottom() - top - 10.0)).max(vec2(220.0, 220.0));
-        let x = (anchor.center().x - size.x / 2.0).clamp(screen.left() + 8.0, (screen.right() - 8.0 - size.x).max(screen.left() + 8.0));
+        let (size, x, top) = if beside {
+            let top_limit = self.studio.top_rect.bottom().max(screen.top()) + 8.0;
+            let size = vec2(want.x.min(screen.width() - anchor.right() - 30.0), want.y.min(screen.bottom() - top_limit - 8.0)).max(vec2(220.0, 220.0));
+            let top = (anchor.center().y - size.y / 2.0).clamp(top_limit, (screen.bottom() - 8.0 - size.y).max(top_limit));
+            (size, anchor.right() + 18.0, top)
+        } else {
+            let top = anchor.bottom() + 12.0;
+            let size = vec2(want.x.min(screen.width() - 16.0), want.y.min(screen.bottom() - top - 10.0)).max(vec2(220.0, 220.0));
+            let x = (anchor.center().x - size.x / 2.0).clamp(screen.left() + 8.0, (screen.right() - 8.0 - size.x).max(screen.left() + 8.0));
+            (size, x, top)
+        };
         const PAD: i8 = 14;
         let inner = size - Vec2::splat(2.0 * f32::from(PAD));
         let mut acts = Vec::new();
@@ -1006,16 +1076,26 @@ impl ModeShell {
                         Popover::Tools => self.tools_body(ui, &t, &mut acts),
                         Popover::Brushes => self.brushes_body(ui, &t, &mut acts),
                         Popover::Color => self.color_body(ui, &t, &mut acts),
+                        Popover::Pressure => self.pressure_body(ui, &t, &mut acts),
                     }
                 });
         });
         let rect = resp.response.rect;
         // The little arrow pointing at the button.
-        let tip = anchor.center().x.clamp(rect.left() + 26.0, rect.right() - 26.0);
         let painter = ctx.layer_painter(resp.response.layer_id);
-        let arrow = vec![pos2(tip - 10.0, rect.top() + 1.0), pos2(tip, rect.top() - 9.0), pos2(tip + 10.0, rect.top() + 1.0)];
+        let arrow = if beside {
+            let tip = anchor.center().y.clamp(rect.top() + 26.0, rect.bottom() - 26.0);
+            vec![pos2(rect.left() + 1.0, tip - 10.0), pos2(rect.left() + 1.0, tip + 10.0), pos2(rect.left() - 9.0, tip)]
+        } else {
+            let tip = anchor.center().x.clamp(rect.left() + 26.0, rect.right() - 26.0);
+            vec![pos2(tip - 10.0, rect.top() + 1.0), pos2(tip, rect.top() - 9.0), pos2(tip + 10.0, rect.top() + 1.0)]
+        };
         painter.add(egui::Shape::convex_polygon(arrow, t.chrome, Stroke::NONE));
-        self.studio.popover_rect = Some(Rect::from_min_max(pos2(rect.left(), rect.top() - 10.0), rect.max));
+        self.studio.popover_rect = Some(if beside {
+            Rect::from_min_max(pos2(rect.left() - 10.0, rect.top()), rect.max)
+        } else {
+            Rect::from_min_max(pos2(rect.left(), rect.top() - 10.0), rect.max)
+        });
         for act in acts {
             self.apply_act(ctx, act);
         }
@@ -1119,6 +1199,9 @@ impl ModeShell {
             if list_row(ui, t, label, None, true, Some(on)).clicked() {
                 acts.push(Act::FingerNavigates(!on));
             }
+        }
+        if list_row(ui, t, tr("Pen sensitivity…", "Sensibilidade da caneta…"), None, true, None).clicked() {
+            acts.push(Act::Popover(Popover::Pressure));
         }
         if let Some(item) = items.iter().find(|i| i.id.starts_with("edit.preferences")) {
             let label = item_label(item);
@@ -1260,6 +1343,76 @@ impl ModeShell {
         if let Some(g) = pick_group {
             self.studio.brush_group = Some(g);
         }
+    }
+
+    /// Pen sensitivity: Use Tablet Pressure, the pressure curve (PhotoCraft's presets, a
+    /// sensitivity slider, draggable points, a preview stroke) and what pressure drives in the
+    /// active brush. The curve is saved when a drag ends, so the preferences file isn't rewritten
+    /// on every frame of it.
+    fn pressure_body(&mut self, ui: &mut egui::Ui, t: &Tokens, acts: &mut Vec<Act>) {
+        let use_pressure = self.app.session.prefs().tools.use_tablet_pressure;
+        let saved = sanitize_curve(self.app.session.prefs().tools.pressure_curve.clone());
+        let brushlike = self.app.ui.tool.is_brushlike();
+        let (pressure_size, pressure_opacity) = (self.app.session.tools.brush.pressure_size, self.app.session.tools.brush.pressure_opacity);
+        title(ui, t, tr("Pen sensitivity", "Sensibilidade da caneta"));
+        egui::ScrollArea::vertical().id_salt("photocraft-mobile-pressure").auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            if list_row(ui, t, tr("Use pen pressure", "Usar a pressão da caneta"), None, true, Some(use_pressure)).clicked() {
+                acts.push(Act::UseTabletPressure(!use_pressure));
+            }
+            section(ui, t, tr("Pressure curve", "Curva de pressão"));
+            let mut curve = self.studio.curve_edit.clone().unwrap_or(saved);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let w = ((ui.available_width() - 12.0) / 3.0).max(40.0);
+                for (en, pt_label, points) in PRESSURE_PRESETS {
+                    if chip(ui, t, tr(en, pt_label), curves_match(&curve, points), w).clicked() {
+                        self.studio.curve_edit = None;
+                        acts.push(Act::PressureCurve(points.to_vec()));
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            let (changed, released) = curve_editor(ui, t, &mut curve, &mut self.studio.curve_point);
+            if changed {
+                self.studio.curve_edit = Some(curve.clone());
+            }
+            if released && let Some(edit) = self.studio.curve_edit.take() {
+                acts.push(Act::PressureCurve(edit));
+            }
+            ui.add_space(4.0);
+            // One slider from hard to soft: it moves a single middle point, keeping the ends.
+            let (labels, _) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
+            let small = FontId::proportional(12.0);
+            ui.painter().text(labels.left_center(), Align2::LEFT_CENTER, tr("Hard", "Duro"), small.clone(), t.text_faint);
+            ui.painter().text(labels.center(), Align2::CENTER_CENTER, tr("Sensitivity", "Sensibilidade"), small.clone(), t.text_dim);
+            ui.painter().text(labels.right_center(), Align2::RIGHT_CENTER, tr("Soft", "Suave"), small, t.text_faint);
+            let mut f = (sensitivity_of(&curve) + 1.0) / 2.0;
+            let r = h_slider(ui, t, "pressure-sensitivity", &mut f, tr("Pen sensitivity", "Sensibilidade da caneta"));
+            if r.changed() {
+                let ends = [curve.first().map_or(0.0, |p| p[1]), curve.last().map_or(1.0, |p| p[1])];
+                curve = curve_for_sensitivity(f * 2.0 - 1.0, ends);
+                self.studio.curve_edit = Some(curve.clone());
+            }
+            if (r.drag_stopped() || r.clicked())
+                && let Some(edit) = self.studio.curve_edit.take()
+            {
+                acts.push(Act::PressureCurve(edit));
+            }
+            section(ui, t, tr("Preview", "Prévia"));
+            pressure_preview(ui, t, &curve);
+            if brushlike {
+                section(ui, t, tr("This brush", "Este pincel"));
+                if list_row(ui, t, tr("Pressure changes the size", "A pressão muda o tamanho"), None, true, Some(pressure_size)).clicked() {
+                    acts.push(Act::PressureSize(!pressure_size));
+                }
+                if list_row(ui, t, tr("Pressure changes the opacity", "A pressão muda a opacidade"), None, true, Some(pressure_opacity)).clicked() {
+                    acts.push(Act::PressureOpacity(!pressure_opacity));
+                }
+                let more = tr("More in Actions › Window › Brush Settings", "Mais em Ações › Janela › Configurações do pincel");
+                ui.label(egui::RichText::new(more).size(12.0).color(t.text_faint));
+            }
+        });
     }
 
     /// The colour popover: the picker chosen in its header (a hue ring around a square, or around
@@ -1570,4 +1723,197 @@ fn hsv_bars(ui: &mut egui::Ui, t: &Tokens, hsv: &mut [f32; 3]) -> (bool, bool) {
         resp.widget_info(|| egui::WidgetInfo::slider(true, f64::from(f), label));
     }
     (changed, released)
+}
+
+/// A pressure curve: `[input, output]` points in 0..1.
+type Curve = [[f32; 2]];
+
+/// PhotoCraft's pressure curve presets (Preferences › Tools › Pressure Curve), softest first,
+/// with their English and Portuguese names.
+pub const PRESSURE_PRESETS: [(&str, &str, &Curve); 3] = [
+    ("Soft", "Suave", &[[0.0, 0.0], [0.3, 0.6], [1.0, 1.0]]),
+    ("Linear", "Linear", &[[0.0, 0.0], [1.0, 1.0]]),
+    ("Hard", "Duro", &[[0.0, 0.0], [0.6, 0.3], [1.0, 1.0]]),
+];
+
+/// At most this many points, as PhotoCraft accepts.
+const MAX_CURVE_POINTS: usize = 16;
+
+/// `points` as a curve PhotoCraft accepts: finite, within 0..1, sorted by input, 2 to 16 points
+/// (linear when there's nothing usable).
+pub fn sanitize_curve(points: Vec<[f32; 2]>) -> Vec<[f32; 2]> {
+    let mut p: Vec<[f32; 2]> =
+        points.into_iter().filter(|q| q[0].is_finite() && q[1].is_finite()).map(|q| [q[0].clamp(0.0, 1.0), q[1].clamp(0.0, 1.0)]).collect();
+    p.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    p.truncate(MAX_CURVE_POINTS);
+    if p.len() < 2 { vec![[0.0, 0.0], [1.0, 1.0]] } else { p }
+}
+
+fn curves_match(a: &Curve, b: &Curve) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(p, q)| (p[0] - q[0]).abs() < 0.005 && (p[1] - q[1]).abs() < 0.005)
+}
+
+/// The curve the sensitivity slider makes, from `s` = -1 (hard) through 0 (linear) to 1 (soft):
+/// one middle point on the anti-diagonal, between the ends' outputs `ends`.
+pub fn curve_for_sensitivity(s: f32, ends: [f32; 2]) -> Vec<[f32; 2]> {
+    let s = if s.is_finite() { s.clamp(-1.0, 1.0) } else { 0.0 };
+    let ends = ends.map(|e| if e.is_finite() { e.clamp(0.0, 1.0) } else { 0.0 });
+    if s.abs() < 0.02 {
+        return vec![[0.0, ends[0]], [1.0, ends[1]]];
+    }
+    let mid_y = (0.5 + 0.3 * s).clamp(ends[0].min(ends[1]), ends[0].max(ends[1]));
+    vec![[0.0, ends[0]], [0.5 - 0.3 * s, mid_y], [1.0, ends[1]]]
+}
+
+/// Where `points` sits on the sensitivity slider (-1 hard … 1 soft): exact for a curve the
+/// slider made, otherwise read from the output at half pressure.
+pub fn sensitivity_of(points: &Curve) -> f32 {
+    match points {
+        [_, _] => 0.0,
+        [_, mid, _] if (mid[0] + mid[1] - 1.0).abs() < 0.01 => ((mid[1] - 0.5) / 0.3).clamp(-1.0, 1.0),
+        _ => {
+            let half = photocraft_engine::prefs::PressureCurve::new(points).eval(0.5);
+            if half.is_finite() { ((half - 0.5) / 0.3).clamp(-1.0, 1.0) } else { 0.0 }
+        }
+    }
+}
+
+/// A preset button of the pen sensitivity popover.
+fn chip(ui: &mut egui::Ui, t: &Tokens, label: &str, on: bool, width: f32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 36.0), Sense::click());
+    let (fill, ink) = if on {
+        (t.accent, ink_on(t.accent))
+    } else if resp.hovered() || resp.is_pointer_button_down_on() {
+        (t.hover, t.text)
+    } else {
+        (t.field, t.text)
+    };
+    ui.painter().rect_filled(rect, 10.0, fill);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(14.0), ink);
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, label));
+    resp
+}
+
+/// A horizontal slider, `value` 0..1 from the left.
+fn h_slider(ui: &mut egui::Ui, t: &Tokens, id: &str, value: &mut f32, tip: &str) -> egui::Response {
+    const H: f32 = 30.0;
+    const THUMB: f32 = 20.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), H), Sense::hover());
+    let mut resp = ui.interact(rect, ui.id().with(("photocraft-mobile-hslider", id)), Sense::click_and_drag());
+    let travel = (rect.width() - THUMB).max(1.0);
+    if let Some(p) = resp.interact_pointer_pos().filter(|_| resp.is_pointer_button_down_on()) {
+        let v = ((p.x - rect.left() - THUMB / 2.0) / travel).clamp(0.0, 1.0);
+        if (v - *value).abs() > f32::EPSILON {
+            *value = v;
+            resp.mark_changed();
+        }
+    }
+    let v = value.clamp(0.0, 1.0);
+    ui.painter().rect_filled(rect.shrink2(vec2(0.0, 9.0)), 6.0, t.field);
+    let thumb = Rect::from_center_size(pos2(rect.left() + THUMB / 2.0 + v * travel, rect.center().y), vec2(THUMB, H - 4.0));
+    let ink = if resp.is_pointer_button_down_on() { t.accent } else { t.text };
+    ui.painter().rect_filled(thumb, THUMB / 2.0, ink);
+    resp.widget_info(|| egui::WidgetInfo::slider(true, f64::from(v), tip));
+    resp
+}
+
+/// The pressure curve as a square graph (pen pressure across, what the brush gets up). Drag a
+/// point to move it (the ends only up and down), press where there's none to add one, double-tap
+/// a middle point to remove it. Returns whether `points` changed and whether the gesture ended.
+fn curve_editor(ui: &mut egui::Ui, t: &Tokens, points: &mut Vec<[f32; 2]>, held: &mut Option<usize>) -> (bool, bool) {
+    let side = ui.available_width().min(250.0);
+    let (outer, resp) = ui.allocate_exact_size(vec2(ui.available_width(), side), Sense::click_and_drag());
+    let rect = Rect::from_center_size(outer.center(), Vec2::splat(side - 16.0));
+    let to_screen = |p: [f32; 2]| pos2(rect.left() + p[0] * rect.width(), rect.bottom() - p[1] * rect.height());
+    let to_curve = |s: Pos2| [((s.x - rect.left()) / rect.width()).clamp(0.0, 1.0), ((rect.bottom() - s.y) / rect.height()).clamp(0.0, 1.0)];
+    let nearest = |at: Pos2, pts: &[[f32; 2]]| {
+        pts.iter().enumerate().map(|(i, q)| (i, to_screen(*q).distance(at))).filter(|(_, d)| *d <= 28.0).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i)
+    };
+    let (mut changed, mut released) = (false, resp.drag_stopped() || resp.clicked());
+    if resp.is_pointer_button_down_on()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        if held.is_none() {
+            let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(p);
+            *held = nearest(origin, points);
+            if held.is_none() && points.len() < MAX_CURVE_POINTS && rect.expand(8.0).contains(origin) {
+                // A new point between the ends, where the press landed.
+                let q = to_curve(origin);
+                let at = points.iter().position(|e| e[0] > q[0]).unwrap_or(points.len()).clamp(1, points.len().saturating_sub(1).max(1));
+                points.insert(at, q);
+                *held = Some(at);
+                changed = true;
+            }
+        }
+        if let Some(i) = *held {
+            let q = to_curve(p);
+            let last = points.len().saturating_sub(1);
+            let (lo, hi) = (points.get(i.wrapping_sub(1)).map(|e| e[0] + 0.02), points.get(i + 1).map(|e| e[0] - 0.02));
+            if let Some(point) = points.get_mut(i) {
+                let moved = if i == 0 || i == last {
+                    [point[0], q[1]]
+                } else {
+                    let lo = lo.unwrap_or(0.0);
+                    [q[0].clamp(lo, hi.unwrap_or(1.0).max(lo)), q[1]]
+                };
+                if moved != *point {
+                    *point = moved;
+                    changed = true;
+                }
+            }
+        }
+    } else {
+        *held = None;
+    }
+    if resp.double_clicked()
+        && let Some(at) = resp.interact_pointer_pos()
+        && let Some(i) = nearest(at, points).filter(|&i| i > 0 && i + 1 < points.len())
+    {
+        points.remove(i);
+        changed = true;
+        released = true;
+    }
+    let painter = ui.painter_at(outer);
+    painter.rect_filled(rect, 6.0, t.field);
+    let grid = Stroke::new(1.0, t.field_border);
+    for k in 1..4 {
+        let f = k as f32 / 4.0;
+        painter.line_segment([pos2(rect.left() + f * rect.width(), rect.top()), pos2(rect.left() + f * rect.width(), rect.bottom())], grid);
+        painter.line_segment([pos2(rect.left(), rect.top() + f * rect.height()), pos2(rect.right(), rect.top() + f * rect.height())], grid);
+    }
+    painter.line_segment([rect.left_bottom(), rect.right_top()], Stroke::new(1.0, t.text_faint.gamma_multiply(0.5)));
+    let curve = photocraft_engine::prefs::PressureCurve::new(points);
+    let line: Vec<Pos2> = (0..=64).map(|k| k as f32 / 64.0).map(|x| to_screen([x, curve.eval(x).clamp(0.0, 1.0)])).collect();
+    painter.add(egui::Shape::line(line, Stroke::new(2.5, t.accent)));
+    for (i, q) in points.iter().enumerate() {
+        let r = if *held == Some(i) { 10.0 } else { 7.0 };
+        painter.circle(to_screen(*q), r, t.text, Stroke::new(2.0, t.chrome));
+    }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, tr("Pressure curve", "Curva de pressão")));
+    (changed, released)
+}
+
+/// A stroke from light (left) to firm (right) pressure, as wide as the curve makes it.
+fn pressure_preview(ui: &mut egui::Ui, t: &Tokens, points: &Curve) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 54.0), Sense::hover());
+    let band = Rect::from_min_max(rect.min + vec2(6.0, 2.0), rect.max - vec2(6.0, 18.0));
+    let curve = photocraft_engine::prefs::PressureCurve::new(points);
+    let mut mesh = egui::Mesh::default();
+    const N: u32 = 48;
+    for k in 0..=N {
+        let f = k as f32 / N as f32;
+        let x = band.left() + f * band.width();
+        let half = 1.0 + (band.height() / 2.0 - 1.0) * curve.eval(f).clamp(0.0, 1.0);
+        mesh.colored_vertex(pos2(x, band.center().y - half), t.text);
+        mesh.colored_vertex(pos2(x, band.center().y + half), t.text);
+        if k > 0 {
+            let j = 2 * k;
+            mesh.add_triangle(j - 2, j - 1, j);
+            mesh.add_triangle(j - 1, j + 1, j);
+        }
+    }
+    ui.painter().add(egui::Shape::mesh(mesh));
+    let small = FontId::proportional(11.5);
+    ui.painter().text(pos2(band.left(), rect.bottom() - 7.0), Align2::LEFT_CENTER, tr("light", "leve"), small.clone(), t.text_faint);
+    ui.painter().text(pos2(band.right(), rect.bottom() - 7.0), Align2::RIGHT_CENTER, tr("firm", "forte"), small, t.text_faint);
 }

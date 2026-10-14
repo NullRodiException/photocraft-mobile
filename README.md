@@ -32,7 +32,7 @@ PhotoCraft ficam escondidos. No lugar deles:
 | Botão | O que faz |
 |---|---|
 | Galeria | mostra e esconde a tela inicial (arquivos recentes, novo, abrir) |
-| Ações (engrenagem) | todos os menus do PhotoCraft em duas colunas (menus à esquerda, itens à direita), com busca; a categoria **Rápido** tem Novo, Abrir, Salvar, Exportar, Encaixar na tela, Tela cheia, "sempre mostrar a barra de opções", "dedos navegam" e Configurações |
+| Ações (engrenagem) | todos os menus do PhotoCraft em duas colunas (menus à esquerda, itens à direita), com busca; a categoria **Rápido** tem Novo, Abrir, Salvar, Exportar, Encaixar na tela, Tela cheia, "sempre mostrar a barra de opções", "dedos navegam", Sensibilidade da caneta e Configurações |
 | Ajustes (varinha) | Imagem › Ajustes e o menu Filtro |
 | Seleção (laço) | as ferramentas de seleção do modo e o menu Selecionar |
 | Transformar (seta) | Transformação livre (`edit.freeTransform`); tocar de novo aplica |
@@ -44,8 +44,21 @@ PhotoCraft ficam escondidos. No lugar deles:
 
 **Barra lateral** flutuando sobre o canvas: tamanho do pincel (escala logarítmica, 1 a 2500 px),
 o botão **modificar** (conta-gotas; tocar de novo volta para a ferramenta anterior), opacidade
-(do pincel, ou do preenchimento no Degradê e no Balde), desfazer e refazer. Enquanto um slider se
-move, um balão mostra o pincel no tamanho real na tela ou a porcentagem.
+(do pincel, ou do preenchimento no Degradê e no Balde), **sensibilidade da caneta**, desfazer e
+refazer. Enquanto um slider se move, um balão mostra o pincel no tamanho real na tela ou a
+porcentagem.
+
+**Sensibilidade da caneta** (o medidor fixo na barra lateral, ou Ações › Rápido): um painel ao
+lado da barra com:
+- "Usar a pressão da caneta" (Preferências › Ferramentas do PhotoCraft);
+- a curva de pressão: os ajustes prontos Suave / Linear / Duro, um slider de Duro a Suave e o
+  gráfico, onde se arrasta um ponto (as pontas só sobem e descem), toca-se num lugar vazio para
+  criar um ponto e dá-se toque duplo para remover um ponto do meio;
+- uma prévia do traço, do leve ao forte;
+- com um pincel ativo, se a pressão muda o tamanho e a opacidade dele.
+
+A curva é a mesma de Preferências › Ferramentas › Curva de pressão (`prefs.set`), gravada quando o
+arraste termina, e o PhotoCraft a salva sozinho.
 
 **Popovers:** um por vez, pendurado no seu botão. Tocar fora fecha sem pintar no canvas; Esc
 também fecha.
