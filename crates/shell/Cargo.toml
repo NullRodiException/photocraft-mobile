@@ -1,0 +1,26 @@
+[package]
+name = "photocraft-mobile-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PhotoCraft's editor wrapped with the Vector / Pixel / Photo mode switcher"
+
+[lints]
+workspace = true
+
+[dependencies]
+photocraft-mobile-modes = { workspace = true }
+photocraft-ui-egui = { workspace = true }
+photocraft-doc = { workspace = true }
+photocraft-io = { workspace = true }
+photocraft-format = { workspace = true }
+photocraft-codecs = { workspace = true }
+eframe = { workspace = true }
+egui = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+photocraft-engine = { workspace = true }
+egui = { workspace = true, features = ["default_fonts"] }
+egui_kittest = { workspace = true, features = ["wgpu", "eframe", "snapshot"] }

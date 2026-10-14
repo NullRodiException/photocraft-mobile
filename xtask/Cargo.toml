@@ -1,0 +1,10 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Project tasks: `cargo xtask android` builds, signs, installs and runs the Android APK"
+
+[lints]
+workspace = true

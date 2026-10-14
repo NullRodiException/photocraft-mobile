@@ -1,0 +1,18 @@
+[package]
+name = "photocraft-mobile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PhotoCraft Mobile on the desktop: the editor with the Vector / Pixel / Photo switcher (the development target for the Android app)"
+
+[lints]
+workspace = true
+
+[dependencies]
+photocraft-mobile-shell = { workspace = true }
+photocraft-ui-egui = { workspace = true }
+photocraft-engine = { workspace = true }
+eframe = { workspace = true, features = ["wgpu", "accesskit", "wayland", "x11"] }
+egui = { workspace = true }
+rfd = { workspace = true }
+log = { workspace = true }

@@ -1,0 +1,57 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*", "xtask"]
+# apps/android is empty off Android; it is built by `cargo xtask android`.
+default-members = ["crates/*", "apps/desktop", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+
+[workspace.dependencies]
+# internal
+photocraft-mobile-modes = { path = "crates/modes" }
+photocraft-mobile-shell = { path = "crates/shell" }
+
+# PhotoCraft, used from the sibling checkout and never modified from here.
+photocraft-ui-egui = { path = "../photocraft/crates/ui-egui" }
+photocraft-engine = { path = "../photocraft/crates/engine" }
+photocraft-doc = { path = "../photocraft/crates/doc" }
+photocraft-io = { path = "../photocraft/crates/io" }
+photocraft-format = { path = "../photocraft/crates/format" }
+photocraft-codecs = { path = "../photocraft/crates/codecs" }
+
+# external (the same versions PhotoCraft pins)
+eframe = { version = "0.36", default-features = false }
+egui = { version = "0.36", default-features = false }
+egui_kittest = "0.36"
+rfd = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+# PhotoCraft's own profile: optimized dependencies keep a debug build usable on large images.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# The APK's native library: release speed, no symbols (they would add hundreds of MB).
+[profile.android-release]
+inherits = "release"
+strip = "symbols"

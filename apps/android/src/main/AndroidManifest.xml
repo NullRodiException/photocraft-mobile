@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- PhotoCraft Mobile: AndroidX GameActivity running the Rust library `libphotocraft_mobile.so`
+     (no Java code of our own). Built by `cargo xtask android`. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- wgpu draws with Vulkan, or OpenGL ES 3 where there is no Vulkan. -->
+    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+
+    <application
+        android:label="PhotoCraft Mobile"
+        android:largeHeap="true"
+        android:theme="@style/Theme.PhotoCraftMobile">
+        <activity
+            android:name="com.google.androidgamesdk.GameActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|density|uiMode|fontScale"
+            android:windowSoftInputMode="stateHidden|adjustResize">
+            <meta-data android:name="android.app.lib_name" android:value="photocraft_mobile" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

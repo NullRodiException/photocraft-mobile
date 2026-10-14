@@ -1,0 +1,31 @@
+[package]
+name = "photocraft-mobile-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PhotoCraft Mobile for Android: the editor with the mode switcher in a NativeActivity (eframe/wgpu)"
+
+# The library NativeActivity loads (`android.app.lib_name` in AndroidManifest.xml).
+[lib]
+name = "photocraft_mobile"
+crate-type = ["cdylib"]
+
+# The workspace forbids `unsafe`. This crate only denies it, because the NativeActivity entry point
+# must be exported unmangled (`#[unsafe(no_mangle)]`). That one item opts back in; nothing else may.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[target.'cfg(target_os = "android")'.dependencies]
+photocraft-mobile-shell = { workspace = true }
+photocraft-ui-egui = { workspace = true }
+photocraft-engine = { workspace = true }
+eframe = { workspace = true, features = ["wgpu", "accesskit", "android-game-activity"] }
+egui = { workspace = true }
+# The same winit eframe uses, named here for its `AndroidApp` type.
+winit = { version = "0.30", default-features = false, features = ["android-game-activity"] }
+log = { workspace = true }
+android_logger = "0.15"

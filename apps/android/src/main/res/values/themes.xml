@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Full screen: the editor's own top bar (the mode switcher) starts at the very top, with no
+         status bar drawn over it. A swipe from the edge still shows the system bars. -->
+    <style name="Theme.PhotoCraftMobile" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>
