@@ -11,6 +11,44 @@ use photocraft_ui_egui::{ExportSettings, Services};
 
 const PREFS: &str = "preferences.json";
 const MODES: &str = "modes.json";
+const SHELL: &str = "shell.json";
+
+/// The shell's own settings (PhotoCraft keeps its preferences in `preferences.json`).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ShellSettings {
+    /// On a pen tablet, fingers on the canvas pan, pinch and tap undo/redo instead of painting.
+    #[serde(default = "yes")]
+    pub finger_navigates: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for ShellSettings {
+    fn default() -> Self {
+        Self { finger_navigates: true }
+    }
+}
+
+/// The saved shell settings in `dir`; a missing or unreadable file starts from the defaults.
+pub fn load_settings(dir: Option<&Path>) -> ShellSettings {
+    dir.and_then(|d| std::fs::read_to_string(d.join(SHELL)).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+/// Saves the shell settings into `dir`, logging (not failing) when that isn't possible.
+pub fn save_settings(dir: Option<&Path>, settings: &ShellSettings) {
+    let result =
+        serde_json::to_vec_pretty(settings).map_err(|e| e.to_string()).and_then(|bytes| write_atomic(&dir.ok_or("no settings folder")?.join(SHELL), &bytes));
+    if let Err(e) = result {
+        log::warn!("couldn't save the shell settings: {e}");
+    }
+}
+
+/// Whether PhotoCraft has saved preferences in `dir` yet (false on a first run).
+pub fn has_preferences(dir: Option<&Path>) -> bool {
+    dir.is_some_and(|d| d.join(PREFS).is_file())
+}
 
 /// Crash-safe write (temp file, fsync, rename), creating the folder first.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -94,6 +132,21 @@ mod tests {
         assert_eq!(load_modes(Some(&dir)), Modes::default());
         assert_eq!(load_modes(None), Modes::default());
         save_modes(None, &modes); // logs, doesn't panic
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shell_settings_round_trip_and_default_to_finger_navigation() {
+        let dir = temp_dir("shell");
+        assert_eq!(load_settings(Some(&dir)), ShellSettings { finger_navigates: true });
+        save_settings(Some(&dir), &ShellSettings { finger_navigates: false });
+        assert_eq!(load_settings(Some(&dir)), ShellSettings { finger_navigates: false });
+        std::fs::write(dir.join(SHELL), "{}").unwrap();
+        assert!(load_settings(Some(&dir)).finger_navigates, "a field missing from an older file takes its default");
+        assert!(!has_preferences(Some(&dir)));
+        std::fs::write(dir.join(PREFS), "{}").unwrap();
+        assert!(has_preferences(Some(&dir)));
+        assert!(!has_preferences(None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

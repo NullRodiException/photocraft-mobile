@@ -18,7 +18,19 @@ estado da UI).
 Mover, Mão, Zoom, Girar Vista e Conta-gotas ficam em todos os modos. Cada modo lembra a última
 ferramenta usada nele, e o modo atual é salvo entre sessões.
 
-Para trocar de modo: clique no seletor no topo, ou use **Alt+1 / Alt+2 / Alt+3**.
+Para trocar de modo: clique no seletor no topo, ou use **Alt+1 / Alt+2 / Alt+3**. Em telas
+estreitas (menos de 700 pt, como o tablet em retrato), o seletor mostra só os ícones.
+
+## Barra de ações
+
+À direita do seletor ficam botões grandes para quem não tem teclado:
+
+| Botão | O que faz |
+|---|---|
+| Desfazer / Refazer | `edit.undo` / `edit.redo` |
+| Encaixar na tela | `view.fitOnScreen` |
+| Foco | esconde e mostra a barra de ferramentas, a barra de opções e o dock (o Tab do Photoshop) |
+| Dedo (só no Android) | alterna entre "dedos navegam" (padrão) e "dedos desenham"; a escolha é salva |
 
 Ao entrar num modo:
 1. `window.workspace.*` abre os painéis do modo;
@@ -30,12 +42,14 @@ Ao entrar num modo:
 ```text
 crates/modes   lógica pura dos modos (sem UI, sem PhotoCraft): listas de ferramentas,
                workspace, memória da última ferramenta. Compila para qualquer alvo.
-crates/shell   ModeShell: embrulha o PhotocraftApp e desenha o seletor (egui).
+crates/shell   ModeShell: embrulha o PhotocraftApp e desenha o seletor e a barra de ações (egui).
+               touch.rs: gestos de dedo no canvas (pan, pinça, desfazer/refazer).
                services.rs: serviços comuns (codecs, gravação atômica, configurações).
                examples/snapshot.rs renderiza offscreen um PNG por modo.
 apps/desktop   executável `photocraft-mobile` (eframe/wgpu) para desenvolver no PC.
-apps/android   biblioteca nativa do app Android (NativeActivity).
-xtask          `cargo xtask android`: compila, empacota, assina, instala e abre o APK.
+apps/android   app Android: biblioteca nativa + MainActivity.java (GameActivity, Gradle).
+xtask          `cargo xtask android`: compila, empacota, assina, instala e abre o APK;
+               `cargo xtask icons`: gera o ícone do launcher.
 ```
 
 As configurações ficam em `%APPDATA%\PhotoCraftMobile` (ou `PHOTOCRAFT_MOBILE_CONFIG_DIR`), não
@@ -103,21 +117,93 @@ crate Android usa `unsafe_code = "deny"` em vez de `forbid` e libera só esse it
 
 ### Caneta (S Pen)
 
-- **Pressão:** a GameActivity só copia X e Y de cada toque, a menos que outros eixos sejam
-  ligados. O `android_main` liga `Axis::Pressure`, e a pressão chega ao PhotoCraft como a força do
-  toque (`egui::Event::Touch { force }`), o mesmo caminho do Windows. Pressão no tamanho e na
-  opacidade, e a curva de pressão em Preferências › Ferramentas, funcionam como no desktop.
+- **Pressão, inclinação e botão lateral** (`apps/android/src/pen.rs`): a `MainActivity` manda cada
+  evento da caneta, encostando ou pairando (`nativePenSample`), com pressão, `AXIS_TILT`,
+  orientação e botões.
+  - Isso vai para o `StylusFeed` do PhotoCraft, o mesmo canal dos leitores de mesa digitalizadora
+    do desktop. Pressão no tamanho e na opacidade e a curva de pressão em Preferências › Ferramentas
+    funcionam como no desktop, e cada amostra leva a inclinação.
+  - A conversão de tilt e orientação em tiltX/tiltY é a mesma do Chromium (`crates/shell/src/pen.rs`).
+  - **Botão lateral da S Pen = borracha:** segurar o botão troca para a Borracha, e soltar volta para
+    a ferramenta anterior. É o tratamento de "virar a caneta" que o PhotoCraft já tem.
+  - A força que o winit põe no toque da caneta é descartada (`pen::input_hook`), para que pressão e
+    inclinação venham da mesma amostra.
+  - A rotação do corpo da caneta não existe na S Pen e fica em 0.
+- **Contorno do pincel ao pairar:** os eventos de hover da caneta movem o ponteiro do egui, e o
+  PhotoCraft desenha o contorno do pincel antes de a caneta encostar.
 - **Rejeição de palma** (`MainActivity.java`): enquanto a caneta encosta ou paira sobre a tela, e
   por 0,5 s depois, toques que começam com dedo ou palma são descartados. Com a caneta longe, os
   dedos funcionam normalmente.
 - **Tela cheia imersiva** (`MainActivity.java`): barra de status, barra de navegação e a taskbar
   do One UI ficam escondidas. Um deslize a partir da borda as mostra por um instante.
-- **Ainda não:** inclinação e rotação da caneta, o botão lateral da S Pen e o cursor do pincel
-  enquanto a caneta paira. O winit 0.30 descarta esses dados no Android, então vão exigir ler os
-  eventos na `MainActivity` e repassá-los ao Rust.
+### Campos numéricos: segurar e deslizar
+
+Nos campos de valor (Opacidade, Fluxo, Suavização, tamanho etc.), com o dedo ou a caneta:
+- **segure** o campo por ~0,35 s: o campo é focado sem abrir o teclado, e aparece um slider
+  vertical ao lado dele;
+- **deslize para cima ou para baixo:** cada 6 pt é ±1. Afastando-se mais de 80 pt para o lado, cada
+  passo vale ±10;
+- **solte** para confirmar.
+
+Arrastar direto, sem segurar antes, usa o ajuste rápido do próprio campo do PhotoCraft (cerca de
+0,5 por ponto, também na vertical). Segurar antes dá o modo fino, com o slider. Um toque rápido
+continua editando por texto. É o `ValueScrub` (`crates/shell/src/scrub.rs`): o
+toque longo vira um clique, o deslizar vira setas ↑/↓ (que o campo do PhotoCraft já aceita) e
+soltar vira Enter. As setas só são enviadas quando o foco caiu num campo de texto, porque fora
+dele seriam atalhos (como mover a camada).
+
+### Teclado na tela
+
+O teclado só abre quando você toca num campo de texto. Diálogos que focam um campo sozinhos (como
+Novo Documento) não o abrem mais por cima dos botões.
+
+### Arquivos (seletor do Android)
+
+Arquivo › Abrir e Salvar / Salvar Como / Exportar usam o seletor de arquivos do sistema (Storage
+Access Framework, `apps/android/src/files.rs` + `MainActivity.java`):
+- **Abrir:** os documentos escolhidos são copiados para o cache do app e abertos de lá.
+- **Salvar:** o seletor cria o documento. O PhotoCraft grava num arquivo do cache ligado a ele, e
+  a `MainActivity` copia para o documento escolhido, com um aviso "Salvo". Salvar de novo o mesmo
+  arquivo vai direto para lá, sem abrir o seletor.
+- Pedidos e respostas trafegam como linhas de texto pelo JNI (a `MainActivity` consulta os pedidos
+  a cada 150 ms), sem nenhum bloco `unsafe`.
+- Escolher pasta ainda não é suportado.
+
+### Dedos: navegam, não pintam
+
+Com a caneta, o dedo no canvas serve para navegar:
+
+| Gesto no canvas | Ação |
+|---|---|
+| arrastar com 1 dedo | move a vista |
+| 2 dedos | pinça (zoom em volta do centro dos dedos) e arrastar |
+| toque rápido com 2 dedos | desfazer |
+| toque rápido com 3 dedos | refazer |
+
+Fora do canvas (menus, painéis, barra) o dedo funciona normalmente. O botão do dedo na barra
+desliga isso para quem pinta com o dedo.
+
+Como funciona:
+- O winit descarta o tipo de ferramenta. Por isso a `MainActivity` informa ao Rust, para cada
+  contato novo, se é dedo ou caneta (`nativeTouchTool`, em `apps/android/src/touch_tools.rs`).
+- O `TouchRouter` (`crates/shell/src/touch.rs`) tira do fluxo de eventos o gesto dos dedos que
+  começaram no canvas, junto com os cliques que o egui emula a partir deles, e devolve pan, zoom
+  e toques.
+- O pan move a vista ativa direto (`app.ui.views`, a mesma conta do canvas). O zoom vai ao
+  PhotoCraft como `Event::Zoom`, que ele aplica com os próprios limites.
+
+### Escala e espaço
+
+- Na primeira execução, a escala da interface fica ~25% acima da do sistema (no Tab S9, 250%),
+  para alvos de toque maiores. Dá para mudar em Preferências › Interface › Escala da UI.
+- O trilho de ícones à direita do dock fica escondido, e o canvas ganha essa largura.
+- **Memória:** na primeira execução, os limites ficam mais conservadores que os do desktop:
+  - Uso de memória: um terço da RAM, entre 1 e 4 GB (`/proc/meminfo`);
+  - Histórico: 30 estados;
+  - Cache de efeitos: 256 MB.
+
+  O Android encerra apps que usam memória demais. Tudo pode ser ajustado em Preferências › Desempenho.
 
 O que ainda falta no Android:
-- Abrir e salvar arquivos pelo Storage Access Framework (o rfd não existe no Android). Hoje dá
-  para criar documentos novos e pintar.
-- Layout de toque: barra de ferramentas e painéis maiores, gesto de pinça para zoom.
-- Orçamentos de memória e cache da GPU menores que os do desktop.
+- O botão Discord e a densidade dos menus e diálogos são do PhotoCraft e não mudam sem alterá-lo.
+- Escolher pasta no seletor de arquivos.

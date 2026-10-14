@@ -3190,10 +3190,12 @@ dependencies = [
  "android_logger",
  "eframe",
  "egui",
+ "jni",
  "log",
  "photocraft-engine",
  "photocraft-mobile-shell",
  "photocraft-ui-egui",
+ "serde_json",
  "winit",
 ]
 
@@ -3220,6 +3222,7 @@ dependencies = [
  "photocraft-io",
  "photocraft-mobile-modes",
  "photocraft-ui-egui",
+ "serde",
  "serde_json",
 ]
 

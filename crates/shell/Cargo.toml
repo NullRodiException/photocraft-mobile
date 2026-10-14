@@ -17,6 +17,7 @@ photocraft-format = { workspace = true }
 photocraft-codecs = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 

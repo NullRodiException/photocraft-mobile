@@ -9,16 +9,62 @@
 //! enabled, so without [`AndroidApp::enable_motion_axis`] every contact reaches winit (and from
 //! there PhotoCraft's stylus input, as `egui::Event::Touch { force }`) at pressure 0.
 //!
+//! Fingers: `MainActivity` reports each contact's tool type through `nativeTouchTool`
+//! (`touch_tools`), and the shell turns fingers on the canvas into pan, pinch and undo/redo taps.
+//!
+//! The S Pen: `MainActivity` sends every stylus event (`pen`): pressure, tilt and the side button
+//! (held: the Eraser) go into PhotoCraft's stylus feed, and hovering moves the brush outline.
+//!
+//! Files: open and save go through the system file picker (`files`, the Storage Access Framework).
+//!
 //! On any other target this crate is empty, so the workspace still builds everywhere.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 #[cfg(target_os = "android")]
+mod files;
+#[cfg(target_os = "android")]
+mod pen;
+#[cfg(target_os = "android")]
+mod touch_tools;
+
+#[cfg(target_os = "android")]
 mod android {
     use photocraft_engine::Session;
-    use photocraft_mobile_shell::{ModeShell, services};
-    use photocraft_ui_egui::PhotocraftApp;
+    use photocraft_mobile_shell::pen::{mem_total_mb, memory_budget_mb};
+    use photocraft_mobile_shell::{ModeShell, services, ui_scale_for};
+    use photocraft_ui_egui::{PhotocraftApp, Services};
+    use serde_json::{Map, Value, json};
     use winit::platform::android::activity::AndroidApp;
     use winit::platform::android::activity::input::Axis;
+
+    /// The platform services: the shared ones, the system file picker, and saves that go on to
+    /// the document the picker chose.
+    fn android_services(config_dir: Option<std::path::PathBuf>) -> Services {
+        Services {
+            file_dialog: Some(Box::new(crate::files::file_dialog)),
+            write: Some(Box::new(|path: &str, bytes: &[u8]| {
+                services::write_atomic(std::path::Path::new(path), bytes)?;
+                crate::files::after_write(path);
+                Ok(())
+            })),
+            ..services::base(config_dir)
+        }
+    }
+
+    /// First-run preferences for a touch device: a larger UI, and memory limits that leave room
+    /// for the system and other apps (PhotoCraft's desktop defaults assume a computer's RAM).
+    fn first_run_preferences(native_scale: Option<f32>) -> Value {
+        let mut values = Map::new();
+        if let Some(scale) = native_scale.and_then(ui_scale_for) {
+            values.insert("interface.uiScale".into(), json!(scale));
+        }
+        if let Some(total) = std::fs::read_to_string("/proc/meminfo").ok().as_deref().and_then(mem_total_mb) {
+            values.insert("performance.memoryUsageMb".into(), json!(memory_budget_mb(total)));
+        }
+        values.insert("performance.historyStates".into(), json!(30));
+        values.insert("performance.effectCacheMb".into(), json!(256));
+        json!({ "values": values })
+    }
 
     /// The GameActivity entry point (called by android-activity's glue on its own thread).
     // The unsafe part is only the unmangled export: the glue finds the function by this name.
@@ -32,20 +78,39 @@ mod android {
         log::info!("starting; settings in {config_dir:?}");
         // S Pen (and any stylus) pressure; see the crate docs.
         app.enable_motion_axis(Axis::Pressure);
+        // The system scale (dpi / 160), for the first run's larger UI.
+        let native_scale = app.config().density().map(|dpi| dpi as f32 / 160.0);
+        let first_run = !services::has_preferences(config_dir.as_deref());
         let options = eframe::NativeOptions { android_app: Some(app), renderer: eframe::Renderer::Wgpu, ..Default::default() };
         let result = eframe::run_native(
             "PhotoCraft Mobile",
             options,
             Box::new(move |cc| {
                 PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
-                let mut app = PhotocraftApp::new(Session::new(), services::base(config_dir.clone()));
+                let mut app = PhotocraftApp::new(Session::new(), android_services(config_dir.clone()));
                 app.background_jobs = true;
                 if let Some(rs) = cc.wgpu_render_state.as_ref() {
                     app.set_wgpu(rs.clone());
                 }
+                if first_run {
+                    let prefs = first_run_preferences(native_scale);
+                    log::info!("first run: {prefs}");
+                    if let Err(e) = app.run("prefs.set", prefs) {
+                        log::warn!("couldn't set the first-run preferences: {e}");
+                    }
+                }
+                // The dock's icon rail repeats the panel tabs: on a tablet the canvas gets that width.
+                app.ui.panels.rail = false;
+                crate::pen::install(app.stylus.feed.clone(), cc.egui_ctx.clone());
                 let modes = services::load_modes(config_dir.as_deref());
-                let save_dir = config_dir.clone();
-                Ok(Box::new(ModeShell::new(app, modes).on_change(Box::new(move |m| services::save_modes(save_dir.as_deref(), m)))))
+                let settings = services::load_settings(config_dir.as_deref());
+                let (modes_dir, settings_dir) = (config_dir.clone(), config_dir.clone());
+                let shell = ModeShell::new(app, modes)
+                    .on_change(Box::new(move |m| services::save_modes(modes_dir.as_deref(), m)))
+                    .with_settings(settings, Box::new(move |s| services::save_settings(settings_dir.as_deref(), s)))
+                    .with_touch_kind(Box::new(crate::touch_tools::tool_of))
+                    .with_input_hook(Box::new(crate::pen::input_hook));
+                Ok(Box::new(shell))
             }),
         );
         if let Err(e) = result {

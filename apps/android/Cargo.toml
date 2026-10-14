@@ -28,4 +28,7 @@ egui = { workspace = true }
 # The same winit eframe uses, named here for its `AndroidApp` type.
 winit = { version = "0.30", default-features = false, features = ["android-game-activity"] }
 log = { workspace = true }
+serde_json = { workspace = true }
 android_logger = "0.15"
+# JNI for the file picker's strings (`files.rs`); the version already in the tree.
+jni = "0.22"

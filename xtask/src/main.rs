@@ -2,7 +2,8 @@
 //!
 //! Builds `apps/android` with cargo-ndk into `target/android/jniLibs/<abi>/`, then packages it
 //! with AndroidX GameActivity through the Gradle project in `apps/android` (`gradlew
-//! assembleRelease`, signed with the debug key). Output: `target/android/photocraft-mobile.apk`.
+//! assembleRelease`, signed with the debug key). Output: `target/android/photocraft-mobile.apk`, or
+//! `photocraft-mobile-<abis>.apk` for a build without arm64-v8a (`--abi x86_64` for the emulator).
 //!
 //! Finds the SDK in `ANDROID_HOME`, `ANDROID_SDK_ROOT` or `%LOCALAPPDATA%\Android\Sdk`, and uses
 //! its newest NDK. Gradle runs on `JAVA_HOME` (JDK 17+).
@@ -125,7 +126,9 @@ fn android(args: &[String]) -> Result<(), String> {
     let gradlew = gradle_dir.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
     run(Command::new(&gradlew).current_dir(&gradle_dir).env("ANDROID_HOME", &sdk).args(["assembleRelease", "--console=plain", "--no-daemon"]))?;
     let built_apk = newest(&gradle_dir.join("build").join("outputs").join("apk").join("release"), |p| p.extension().is_some_and(|e| e == "apk"))?;
-    let apk = out.join("photocraft-mobile.apk");
+    // A build without arm64 (the emulator) gets its own name, so it never replaces the one for phones and tablets.
+    let apk =
+        if abis.iter().any(|a| a == "arm64-v8a") { out.join("photocraft-mobile.apk") } else { out.join(format!("photocraft-mobile-{}.apk", abis.join("-"))) };
     std::fs::copy(&built_apk, &apk).map_err(|e| format!("{}: {e}", built_apk.display()))?;
     let size = std::fs::metadata(&apk).map(|m| m.len()).unwrap_or(0);
     eprintln!("APK: {} ({:.1} MB)", apk.display(), size as f64 / 1_048_576.0);

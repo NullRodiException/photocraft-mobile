@@ -1,8 +1,18 @@
 package dev.photocraftmobile.app;
 
+import android.content.ActivityNotFoundException;
+import android.content.ClipData;
+import android.content.Intent;
+import android.database.Cursor;
+import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.OpenableColumns;
 import android.view.MotionEvent;
 import android.view.View;
+import android.webkit.MimeTypeMap;
+import android.widget.Toast;
 
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -10,9 +20,23 @@ import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.google.androidgamesdk.GameActivity;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 /**
- * GameActivity running the Rust library (libphotocraft_mobile.so), plus two things a drawing app
- * on a pen tablet needs and the Rust side cannot do through winit:
+ * GameActivity running the Rust library (libphotocraft_mobile.so), plus what a drawing app on a
+ * pen tablet needs and the Rust side cannot do through winit:
  *
  * <ul>
  *   <li><b>Immersive full screen.</b> The status bar, the navigation bar and the One UI taskbar
@@ -21,11 +45,23 @@ import com.google.androidgamesdk.GameActivity;
  *       {@link #PEN_GRACE_MS} after it leaves, touches that start with a finger or palm are dropped
  *       before they reach the app, so a hand resting on the screen doesn't paint. With the pen
  *       away, fingers work as usual.
+ *   <li><b>Tool type.</b> Each new contact's tool (finger or pen) goes to the Rust side, which
+ *       turns fingers on the canvas into navigation (pan, pinch, two/three-finger tap).
+ *   <li><b>The pen itself.</b> Every stylus event (touching or hovering) goes to the Rust side
+ *       with its pressure, tilt, orientation and buttons: tilt for the brushes, the side button as
+ *       the eraser, and the hover position for the brush outline.
+ *   <li><b>Files.</b> Open and Save use the system file picker (Storage Access Framework). The
+ *       Rust side queues requests that this activity polls; picked documents are copied into the
+ *       app cache to open, and saves are written there and copied to the picked document.
  * </ul>
  */
 public class MainActivity extends GameActivity {
     /** How long after the pen leaves the screen a new finger touch is still taken for the palm. */
     private static final long PEN_GRACE_MS = 500;
+    /** How often the Rust side's file requests are checked (ms). */
+    private static final long POLL_MS = 150;
+    private static final int REQUEST_OPEN = 7101;
+    private static final int REQUEST_SAVE = 7102;
 
     /** The pen is touching or hovering. */
     private boolean penInRange;
@@ -34,10 +70,39 @@ public class MainActivity extends GameActivity {
     /** The finger gesture in progress is being dropped (decided at its first contact). */
     private boolean rejectingGesture;
 
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final ExecutorService io = Executors.newSingleThreadExecutor();
+    /** Save paths in the cache and the documents the picker created for them. */
+    private final Map<String, Uri> saveTargets = new HashMap<>();
+    private long openRequest = -1;
+    private long saveRequest = -1;
+    private String saveName = "";
+
+    private final Runnable poll = new Runnable() {
+        @Override
+        public void run() {
+            pollRequests();
+            handler.postDelayed(this, POLL_MS);
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         hideSystemBars();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        handler.removeCallbacks(poll);
+        handler.post(poll);
+    }
+
+    @Override
+    protected void onPause() {
+        handler.removeCallbacks(poll);
+        super.onPause();
     }
 
     @Override
@@ -56,10 +121,14 @@ public class MainActivity extends GameActivity {
         controller.hide(WindowInsetsCompat.Type.systemBars());
     }
 
+    // ---- Input ----------------------------------------------------------------------------
+
     @Override
     protected boolean processMotionEvent(MotionEvent event) {
         if (isPen(event)) {
             trackPen(event);
+            reportTool(event);
+            reportPen(event);
             return super.processMotionEvent(event);
         }
         int action = event.getActionMasked();
@@ -71,7 +140,40 @@ public class MainActivity extends GameActivity {
         if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
             rejectingGesture = false;
         }
-        return drop || super.processMotionEvent(event);
+        if (drop) {
+            return true;
+        }
+        reportTool(event);
+        return super.processMotionEvent(event);
+    }
+
+    /**
+     * Tells the Rust side what a new contact is (winit drops the tool type), before the event
+     * reaches it: fingers on the canvas then pan, pinch and tap undo/redo instead of painting.
+     */
+    private static void reportTool(MotionEvent event) {
+        int action = event.getActionMasked();
+        if (action != MotionEvent.ACTION_DOWN && action != MotionEvent.ACTION_POINTER_DOWN) {
+            return;
+        }
+        int index = event.getActionIndex();
+        try {
+            nativeTouchTool(event.getPointerId(index), event.getToolType(index));
+        } catch (UnsatisfiedLinkError e) {
+            // The library isn't loaded yet: the contact reaches the app as a plain touch.
+        }
+    }
+
+    /** Sends a stylus event's pressure, tilt, orientation and buttons (winit drops all but pressure). */
+    private static void reportPen(MotionEvent event) {
+        int i = event.getActionIndex();
+        try {
+            nativePenSample(event.getActionMasked(), event.getX(i), event.getY(i), event.getPressure(i),
+                    event.getAxisValue(MotionEvent.AXIS_TILT, i), event.getOrientation(i),
+                    event.getButtonState(), event.getToolType(i));
+        } catch (UnsatisfiedLinkError e) {
+            // Not loaded yet: the pen paints with winit's pressure only.
+        }
     }
 
     private void trackPen(MotionEvent event) {
@@ -107,4 +209,206 @@ public class MainActivity extends GameActivity {
         }
         return event.getPointerCount() > 0;
     }
+
+    // ---- Files ----------------------------------------------------------------------------
+
+    /** Handles the Rust side's queued file requests (see apps/android/src/files.rs). */
+    private void pollRequests() {
+        for (int n = 0; n < 8; n++) {
+            String request;
+            try {
+                request = nativeNextRequest();
+            } catch (UnsatisfiedLinkError e) {
+                return;
+            }
+            if (request == null) {
+                return;
+            }
+            String[] f = request.split("\t", -1);
+            try {
+                switch (f[0]) {
+                    case "open":
+                        openDocuments(Long.parseLong(f[1]), "1".equals(f[2]));
+                        break;
+                    case "save":
+                        createDocument(Long.parseLong(f[1]), f[2]);
+                        break;
+                    case "export":
+                        export(f[1]);
+                        break;
+                    default:
+                        break;
+                }
+            } catch (RuntimeException e) {
+                // A malformed line: skip it rather than stop the app.
+            }
+        }
+    }
+
+    private void openDocuments(long id, boolean multiple) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple);
+        openRequest = id;
+        try {
+            startActivityForResult(intent, REQUEST_OPEN);
+        } catch (ActivityNotFoundException e) {
+            openRequest = -1;
+            nativeOpenResult(id, "");
+        }
+    }
+
+    private void createDocument(long id, String name) {
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType(mimeFor(name));
+        intent.putExtra(Intent.EXTRA_TITLE, name);
+        saveRequest = id;
+        saveName = name;
+        try {
+            startActivityForResult(intent, REQUEST_SAVE);
+        } catch (ActivityNotFoundException e) {
+            saveRequest = -1;
+            nativeSaveResult(id, "");
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        boolean ok = resultCode == RESULT_OK && data != null;
+        if (requestCode == REQUEST_OPEN && openRequest >= 0) {
+            long id = openRequest;
+            openRequest = -1;
+            List<Uri> uris = new ArrayList<>();
+            if (ok) {
+                ClipData clip = data.getClipData();
+                if (clip != null) {
+                    for (int i = 0; i < clip.getItemCount(); i++) {
+                        uris.add(clip.getItemAt(i).getUri());
+                    }
+                } else if (data.getData() != null) {
+                    uris.add(data.getData());
+                }
+            }
+            // Copying a large photo takes a moment: off the UI thread.
+            io.execute(() -> {
+                StringBuilder paths = new StringBuilder();
+                File dir = new File(getCacheDir(), "saf-open/" + id);
+                for (Uri uri : uris) {
+                    File target = new File(dir, safeName(displayName(uri)));
+                    if (copy(uri, target)) {
+                        paths.append(target.getAbsolutePath()).append('\n');
+                    }
+                }
+                nativeOpenResult(id, paths.toString());
+            });
+        } else if (requestCode == REQUEST_SAVE && saveRequest >= 0) {
+            long id = saveRequest;
+            saveRequest = -1;
+            Uri uri = ok ? data.getData() : null;
+            if (uri == null) {
+                nativeSaveResult(id, "");
+                return;
+            }
+            File dir = new File(getCacheDir(), "saf-save/" + id);
+            //noinspection ResultOfMethodCallIgnored
+            dir.mkdirs();
+            File target = new File(dir, safeName(saveName));
+            saveTargets.put(target.getAbsolutePath(), uri);
+            nativeSaveResult(id, target.getAbsolutePath());
+        }
+    }
+
+    /** After the Rust side wrote a save into the cache: copy it to its picked document. */
+    private void export(String path) {
+        Uri uri = saveTargets.get(path);
+        if (uri == null) {
+            return;
+        }
+        String name = new File(path).getName();
+        io.execute(() -> {
+            boolean ok;
+            try (InputStream in = new FileInputStream(path);
+                 OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
+                ok = out != null && pipe(in, out);
+            } catch (IOException | SecurityException e) {
+                ok = false;
+            }
+            boolean saved = ok;
+            runOnUiThread(() -> Toast.makeText(this, saved ? text("Saved: ", "Salvo: ") + name : text("Couldn't save ", "Não foi possível salvar ") + name, Toast.LENGTH_SHORT).show());
+        });
+    }
+
+    private boolean copy(Uri uri, File target) {
+        File dir = target.getParentFile();
+        if (dir != null) {
+            //noinspection ResultOfMethodCallIgnored
+            dir.mkdirs();
+        }
+        try (InputStream in = getContentResolver().openInputStream(uri); OutputStream out = new FileOutputStream(target)) {
+            return in != null && pipe(in, out);
+        } catch (IOException | SecurityException e) {
+            return false;
+        }
+    }
+
+    private static boolean pipe(InputStream in, OutputStream out) throws IOException {
+        byte[] buffer = new byte[1 << 16];
+        int n;
+        while ((n = in.read(buffer)) > 0) {
+            out.write(buffer, 0, n);
+        }
+        out.flush();
+        return true;
+    }
+
+    private String displayName(Uri uri) {
+        try (Cursor c = getContentResolver().query(uri, new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                String name = c.getString(0);
+                if (name != null && !name.isEmpty()) {
+                    return name;
+                }
+            }
+        } catch (RuntimeException e) {
+            // Fall through to the URI's last segment.
+        }
+        String last = uri.getLastPathSegment();
+        return last != null ? last : "document";
+    }
+
+    private static String safeName(String name) {
+        String s = name.replaceAll("[/\\\\\\t\\r\\n:]", "_").trim();
+        return s.isEmpty() ? "document" : s;
+    }
+
+    private static String mimeFor(String name) {
+        int dot = name.lastIndexOf('.');
+        String ext = dot >= 0 ? name.substring(dot + 1).toLowerCase(Locale.ROOT) : "";
+        String mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
+        return mime != null ? mime : "application/octet-stream";
+    }
+
+    private static String text(String en, String pt) {
+        return "pt".equals(Locale.getDefault().getLanguage()) ? pt : en;
+    }
+
+    // ---- Rust (apps/android/src) ----------------------------------------------------------
+
+    /** touch_tools.rs */
+    private static native void nativeTouchTool(int pointerId, int toolType);
+
+    /** pen.rs */
+    private static native void nativePenSample(int action, float x, float y, float pressure, float tilt, float orientation, int buttons, int toolType);
+
+    /** files.rs: the next request line, or null. */
+    private static native String nativeNextRequest();
+
+    /** files.rs: one path per line; empty when cancelled. */
+    private static native void nativeOpenResult(long id, String paths);
+
+    /** files.rs: where to write the save; empty when cancelled. */
+    private static native void nativeSaveResult(long id, String path);
 }
