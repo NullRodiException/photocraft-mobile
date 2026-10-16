@@ -88,6 +88,7 @@ crates/shell   ModeShell: embrulha o PhotocraftApp na interface (egui).
                touch.rs: gestos de dedo no canvas (pan, pinça, desfazer/refazer).
                services.rs: serviços comuns (codecs, gravação atômica, configurações).
                examples/snapshot.rs renderiza offscreen um PNG por modo (e popovers).
+               examples/frame_bench.rs mede o custo de CPU dos frames, sem janela.
 apps/desktop   executável `photocraft-mobile` (eframe/wgpu) para desenvolver no PC.
 apps/android   app Android: biblioteca nativa + MainActivity.java (GameActivity, Gradle).
 xtask          `cargo xtask android`: compila, empacota, assina, instala e abre o APK;
@@ -108,6 +109,10 @@ cargo run --release -p photocraft-mobile-shell --example snapshot -- --out shots
 # com um documento de exemplo e um popover aberto (actions, adjustments, selection, tools,
 # brushes, color); --layers abre o painel Camadas e --triangle usa o seletor de cor em triângulo
 cargo run --release -p photocraft-mobile-shell --example snapshot -- --out shots --new 1600x1200 --popover brushes
+# custo de CPU por frame (média e p95, em ms) ocioso, com a caneta pairando, pintando, no pan
+# com o dedo e com cada popover aberto; por padrão na tela do Tab S9 FE (920x576 pt a 2,5x).
+# --only actions mede só um caso. Compare medições feitas na mesma máquina.
+cargo run --release -p photocraft-mobile-shell --example frame_bench -- --frames 150
 ```
 
 O `Cargo.lock` começou como cópia do lock do PhotoCraft, para usar as mesmas versões testadas.
@@ -256,6 +261,22 @@ Como funciona:
   - Cache de efeitos: 256 MB.
 
   O Android encerra apps que usam memória demais. Tudo pode ser ajustado em Preferências › Desempenho.
+- **GPU:** o PhotoCraft limita as texturas de um documento a um quarto da RAM, mas não sabe ler a
+  RAM no Android e supõe 16 GB. A `MainActivity` informa o valor real em `PHOTOCRAFT_RAM_MB`
+  (`ActivityManager`) antes de a biblioteca iniciar. Como no desktop e na web, o app pede os
+  limites de textura da própria GPU (`gpu_canvas::use_adapter_limits`), e não o teto de 8192 px
+  do egui: imagens maiores que isso continuam no compositor da GPU.
+
+### Desempenho
+
+- Os itens de menu dos popovers Ações, Ajustes e Seleção (estado ativado/marcado de cada item)
+  são montados de novo só quando o documento, as ferramentas ou os painéis mudam, ou num frame
+  com toque ou tecla, como a barra de menus do PhotoCraft faz. Montá-los a cada frame custava
+  ~3 ms no desktop. A busca de Ações fica guardada junto, até a consulta mudar.
+- A barra superior e as grades de ferramentas acham as ferramentas pelo nome numa tabela pronta
+  (`tool_named`), e não com `Tool::from_name`, que monta várias strings por ferramenta a cada chamada.
+- Segurar um campo para deslizar não pede frames enquanto o dedo fica parado.
+- `frame_bench` (em Comandos) mede tudo isso.
 
 O que ainda falta no Android:
 - O botão Discord da tela inicial e a densidade dos menus e diálogos são do PhotoCraft e não mudam

@@ -347,6 +347,73 @@ fn one_arrow_key_is_one_step_in_a_photocraft_value_field() {
 }
 
 #[test]
+fn tools_are_found_by_name_as_photocraft_finds_them() {
+    for name in tool_names() {
+        let tool = tool_named(&name);
+        assert_eq!(tool, Tool::from_name(&name), "{name}");
+        assert_eq!(tool.map(tool_name), Some(name.as_str()));
+    }
+    // Any other spelling goes to PhotoCraft's own lookup.
+    assert_eq!(tool_named("brush"), Tool::from_name("brush"));
+    assert_eq!(tool_named("no such tool"), None);
+}
+
+/// One frame drawing the open popover, with `events`.
+fn popover_frame(ctx: &egui::Context, s: &mut ModeShell, events: Vec<egui::Event>) {
+    let mut out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| s.popover(ui.ctx()));
+    out.textures_delta.clear();
+}
+
+#[test]
+fn menu_popovers_keep_their_items_until_something_changes() {
+    let ctx = egui::Context::default();
+    PhotocraftApp::setup_context(&ctx, Default::default());
+    let (mut s, _) = shell_with_document();
+    let same = |a: &Option<std::rc::Rc<[photocraft_ui_egui::menus::MenuItem]>>, b: &Option<std::rc::Rc<[photocraft_ui_egui::menus::MenuItem]>>| matches!((a, b), (Some(a), Some(b)) if std::rc::Rc::ptr_eq(a, b));
+    s.toggle_popover(Popover::Actions);
+    popover_frame(&ctx, &mut s, vec![]);
+    let first = s.studio.kept_menu_items();
+    assert!(first.is_some());
+    popover_frame(&ctx, &mut s, vec![]);
+    assert!(same(&first, &s.studio.kept_menu_items()), "nothing changed: the items are kept");
+
+    // A command changes the document: the rows are built again, and match a fresh build.
+    s.app.run("layer.new.layer", json!({})).unwrap();
+    popover_frame(&ctx, &mut s, vec![]);
+    let after = s.studio.kept_menu_items();
+    assert!(!same(&first, &after), "the document changed");
+    let fresh: Vec<(String, bool, Option<bool>)> = studio::live_items(&s.app).into_iter().map(|i| (i.id, i.enabled, i.checked)).collect();
+    let kept: Vec<(String, bool, Option<bool>)> = after.iter().flat_map(|items| items.iter()).map(|i| (i.id.clone(), i.enabled, i.checked)).collect();
+    assert_eq!(kept, fresh);
+
+    // A tap rebuilds them on its frame and the next (its command runs after the rows are drawn).
+    popover_frame(&ctx, &mut s, vec![press_at(5000.0, 5000.0, false)]);
+    let tapped = s.studio.kept_menu_items();
+    assert!(!same(&after, &tapped));
+    popover_frame(&ctx, &mut s, vec![]);
+    let next = s.studio.kept_menu_items();
+    assert!(!same(&tapped, &next));
+    popover_frame(&ctx, &mut s, vec![]);
+    assert!(same(&next, &s.studio.kept_menu_items()));
+
+    // The search finds what PhotoCraft's search finds, and is kept with the items.
+    let items = s.studio.kept_menu_items().unwrap();
+    let hits = s.search_hits(&items, "layer");
+    assert!(std::rc::Rc::ptr_eq(&hits, &s.search_hits(&items, "layer")));
+    let expected: Vec<&str> =
+        photocraft_ui_egui::menus::search_items(&items, "layer", photocraft_ui_egui::i18n::current()).iter().map(|i| i.id.as_str()).collect();
+    let found: Vec<&str> = hits.iter().map(|&i| items[i].id.as_str()).collect();
+    assert!(!found.is_empty());
+    assert_eq!(found, expected);
+    assert!(!std::rc::Rc::ptr_eq(&hits, &s.search_hits(&items, "layers")), "another query searches again");
+
+    // Closed, nothing is kept.
+    s.studio.popover = None;
+    popover_frame(&ctx, &mut s, vec![]);
+    assert!(s.studio.kept_menu_items().is_none());
+}
+
+#[test]
 fn tool_grids_drop_the_word_tool() {
     use studio::short_tool_name;
     assert_eq!(short_tool_name("Move Tool"), "Move");

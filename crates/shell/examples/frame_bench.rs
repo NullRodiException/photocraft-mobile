@@ -123,26 +123,23 @@ fn main() -> Result<(), String> {
     let frames: usize = arg(&args, "--frames").and_then(|s| s.parse().ok()).unwrap_or(120);
     let only = arg(&args, "--only");
 
-    let mut harness: Harness = egui_kittest::Harness::builder()
-        .with_size(vec2(w, h))
-        .with_pixels_per_point(scale)
-        .with_max_steps(64)
-        .with_step_dt(1.0 / 60.0)
-        .wgpu()
-        .build_eframe(move |cc| {
-            PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
-            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Services::default());
-            if let Some(rs) = cc.wgpu_render_state.as_ref() {
-                app.set_wgpu(rs.clone());
-            }
-            if let Err(e) = app.run("file.new", json!({ "width": dw, "height": dh, "background": "white" })) {
-                eprintln!("couldn't make a document: {e}");
-            }
-            app.ui.panels.rail = false;
-            let shell = ModeShell::new(app, Modes::default())
-                .with_touch_kind(Box::new(|id| Some(if id >= FINGER { ToolKind::Finger } else { ToolKind::Pen })));
-            Timed { shell, last_ms: 0.0 }
-        });
+    let mut harness: Harness =
+        egui_kittest::Harness::builder().with_size(vec2(w, h)).with_pixels_per_point(scale).with_max_steps(64).with_step_dt(1.0 / 60.0).wgpu().build_eframe(
+            move |cc| {
+                PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+                let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Services::default());
+                if let Some(rs) = cc.wgpu_render_state.as_ref() {
+                    app.set_wgpu(rs.clone());
+                }
+                if let Err(e) = app.run("file.new", json!({ "width": dw, "height": dh, "background": "white" })) {
+                    eprintln!("couldn't make a document: {e}");
+                }
+                app.ui.panels.rail = false;
+                let shell =
+                    ModeShell::new(app, Modes::default()).with_touch_kind(Box::new(|id| Some(if id >= FINGER { ToolKind::Finger } else { ToolKind::Pen })));
+                Timed { shell, last_ms: 0.0 }
+            },
+        );
     harness.run_steps(6);
     let ctx = harness.ctx.clone();
     harness.state_mut().shell.switch_to(&ctx, Mode::Pixel)?;
@@ -167,8 +164,10 @@ fn main() -> Result<(), String> {
         }
         report("idle", &s);
         // When nothing happens, nothing should ask for the next frame.
-        let delay = harness.output().viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.repaint_delay);
-        println!("{:<22} next repaint asked in {delay:?}", "idle");
+        match harness.output().viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.repaint_delay) {
+            Some(delay) if delay < std::time::Duration::MAX => println!("{:<22} asks for another frame in {delay:?}", "idle"),
+            _ => println!("{:<22} asks for no other frame", "idle"),
+        }
     }
 
     // The pen hovering over the canvas: the brush outline follows it.
@@ -269,6 +268,16 @@ fn main() -> Result<(), String> {
         }
         report("layers panel", &s);
         harness.state_mut().shell.studio.side = None;
+    }
+    // The Actions popover's search, which runs on every frame while a query is typed.
+    if run("search") {
+        use photocraft_ui_egui::{i18n, menus};
+        let items = menus::menu_items(&harness.state().shell.app);
+        let t = Instant::now();
+        for _ in 0..frames {
+            std::hint::black_box(menus::search_items(&items, "camada", i18n::current()));
+        }
+        println!("{:<22} {:>6.2} ms per search", "actions search", t.elapsed().as_secs_f64() * 1000.0 / frames as f64);
     }
     println!("total {:.1} s", clock());
     Ok(())

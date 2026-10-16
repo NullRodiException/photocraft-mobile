@@ -127,6 +127,8 @@ pub struct ModeShell {
     keyboard_ok: bool,
     /// A hold is pending: repaint after this many seconds to see it through.
     scrub_wake: Option<f64>,
+    /// Frames drawn since the scrub in progress began.
+    scrub_frames: u8,
 }
 
 impl ModeShell {
@@ -150,6 +152,7 @@ impl ModeShell {
             last_focus: None,
             keyboard_ok: false,
             scrub_wake: None,
+            scrub_frames: 0,
         }
     }
 
@@ -389,7 +392,17 @@ impl ModeShell {
         if !self.keyboard_ok {
             ctx.output_mut(|o| o.ime = None);
         }
-        let Some(offset) = self.scrub.offset() else { return };
+        let Some(offset) = self.scrub.offset() else {
+            self.scrub_frames = 0;
+            return;
+        };
+        // The first frames of a scrub are asked for: the field the hold focused may only show as a
+        // text field on the next one. After that the knob moves with the contact, whose events
+        // bring the frames, so a finger held still costs none.
+        if self.scrub_frames < 2 {
+            self.scrub_frames += 1;
+            ctx.request_repaint();
+        }
         let Some(field) = focus.filter(|id| egui::text_edit::TextEditState::load(ctx, *id).is_some()).and_then(|id| ctx.read_response(id)).map(|r| r.rect)
         else {
             return;
@@ -414,8 +427,6 @@ impl ModeShell {
         arrow(egui::pos2(track.center().x, track.bottom() - 14.0), false);
         let reach = H / 2.0 - 30.0;
         let knob = egui::pos2(track.center().x, track.center().y - offset.clamp(-reach, reach));
-        // No repaint asked for: the knob only moves with the contact, whose events bring the
-        // next frame. A finger held still costs no frames.
         painter.circle(knob, 11.0, t.accent, Stroke::new(2.0, studio::ink_on(t.accent)));
     }
 }

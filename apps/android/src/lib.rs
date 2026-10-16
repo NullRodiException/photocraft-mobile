@@ -76,12 +76,21 @@ mod android {
         // App-private storage: preferences and the saved mode.
         let config_dir = app.internal_data_path();
         log::info!("starting; settings in {config_dir:?}");
+        // MainActivity reads the device's RAM for PhotoCraft's GPU memory budgets.
+        match std::env::var("PHOTOCRAFT_RAM_MB") {
+            Ok(mb) => log::info!("RAM for the GPU budgets: {mb} MB"),
+            Err(_) => log::warn!("RAM unknown: PhotoCraft assumes 16 GB for its GPU budgets"),
+        }
         // S Pen (and any stylus) pressure; see the crate docs.
         app.enable_motion_axis(Axis::Pressure);
         // The system scale (dpi / 160), for the first run's larger UI.
         let native_scale = app.config().density().map(|dpi| dpi as f32 / 160.0);
         let first_run = !services::has_preferences(config_dir.as_deref());
-        let options = eframe::NativeOptions { android_app: Some(app), renderer: eframe::Renderer::Wgpu, ..Default::default() };
+        let mut options = eframe::NativeOptions { android_app: Some(app), renderer: eframe::Renderer::Wgpu, ..Default::default() };
+        // The GPU's own texture and buffer size limits, as PhotoCraft's desktop and web apps ask
+        // for. egui's default caps textures at 8192 px, which sends any larger image (a 200 MP
+        // photo, a panorama) to the much slower CPU compositor.
+        photocraft_ui_egui::gpu_canvas::use_adapter_limits(&mut options.wgpu_options.wgpu_setup);
         let result = eframe::run_native(
             "PhotoCraft Mobile",
             options,

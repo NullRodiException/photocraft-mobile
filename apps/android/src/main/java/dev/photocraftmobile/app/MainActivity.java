@@ -1,7 +1,9 @@
 package dev.photocraftmobile.app;
 
+import android.app.ActivityManager;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
+import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
@@ -9,6 +11,8 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
+import android.system.ErrnoException;
+import android.system.Os;
 import android.view.MotionEvent;
 import android.view.View;
 import android.webkit.MimeTypeMap;
@@ -62,6 +66,8 @@ public class MainActivity extends GameActivity {
     private static final long POLL_MS = 150;
     private static final int REQUEST_OPEN = 7101;
     private static final int REQUEST_SAVE = 7102;
+    /** The device's RAM in MB, for PhotoCraft's GPU memory budgets (see {@link #tellRam}). */
+    private static final String RAM_ENV = "PHOTOCRAFT_RAM_MB";
 
     /** The pen is touching or hovering. */
     private boolean penInRange;
@@ -88,8 +94,38 @@ public class MainActivity extends GameActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // Before super.onCreate, which loads the Rust library and starts it.
+        tellRam();
         super.onCreate(savedInstanceState);
         hideSystemBars();
+    }
+
+    /**
+     * PhotoCraft sizes its GPU memory budgets from the device's RAM (a document's display textures
+     * may take a quarter of it), but it can't read the RAM on Android and assumes 16 GB there: on a
+     * tablet with 6 or 8 GB, where the GPU shares that RAM, a large image could take far more than
+     * the system can spare. It reads the real amount from PHOTOCRAFT_RAM_MB, set here once; a value
+     * already set is kept.
+     */
+    private void tellRam() {
+        if (Os.getenv(RAM_ENV) != null) {
+            return;
+        }
+        ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        if (am == null) {
+            return;
+        }
+        ActivityManager.MemoryInfo info = new ActivityManager.MemoryInfo();
+        am.getMemoryInfo(info);
+        long mb = info.totalMem / (1024 * 1024);
+        if (mb <= 0) {
+            return;
+        }
+        try {
+            Os.setenv(RAM_ENV, Long.toString(mb), false);
+        } catch (ErrnoException e) {
+            // PhotoCraft keeps its own assumption.
+        }
     }
 
     @Override

@@ -177,6 +177,8 @@ struct MenuItems {
     /// drawn) shows next frame, so that frame builds them again.
     input: bool,
     items: std::rc::Rc<[MenuItem]>,
+    /// The Actions search last run over these items: its query and the rows it found.
+    search: Option<(String, std::rc::Rc<[usize]>)>,
 }
 
 impl Default for Studio {
@@ -252,6 +254,12 @@ impl Studio {
     /// The shell's own controls are under `p` (last frame): a hold there never scrubs a field.
     pub(crate) fn owns(&self, p: Pos2) -> bool {
         self.top_rect.contains(p) || self.side_rect.is_some_and(|r| r.contains(p)) || self.popover_rect.is_some_and(|r| r.contains(p))
+    }
+
+    /// The menu items the open popover keeps (tests).
+    #[cfg(test)]
+    pub(crate) fn kept_menu_items(&self) -> Option<std::rc::Rc<[MenuItem]>> {
+        self.menu_items.as_ref().map(|m| m.items.clone())
     }
 }
 
@@ -530,7 +538,7 @@ fn tool_tile(ui: &mut egui::Ui, t: &Tokens, tool: Tool, selected: bool) -> egui:
 const TILE: Vec2 = vec2(96.0, 76.0);
 
 /// The live menu items (what PhotoCraft implements), without separators.
-fn live_items(app: &PhotocraftApp) -> Vec<MenuItem> {
+pub(crate) fn live_items(app: &PhotocraftApp) -> Vec<MenuItem> {
     menus::menu_items(app).into_iter().filter(|i| !i.path.is_empty() && !i.label.is_empty() && i.label != "-" && menus::is_live(&i.id)).collect()
 }
 
@@ -1163,8 +1171,25 @@ impl ModeShell {
             return m.items.clone();
         }
         let items: std::rc::Rc<[MenuItem]> = live_items(&self.app).into();
-        self.studio.menu_items = Some(MenuItems { state, input, items: items.clone() });
+        self.studio.menu_items = Some(MenuItems { state, input, items: items.clone(), search: None });
         items
+    }
+
+    /// The rows of `items` (the kept menu items) the Actions search finds for `query`, in its
+    /// order. Searching translates and ranks every item, so the result is kept with the items
+    /// until the query or the items change.
+    pub(crate) fn search_hits(&mut self, items: &[MenuItem], query: &str) -> std::rc::Rc<[usize]> {
+        if let Some((q, hits)) = self.studio.menu_items.as_ref().and_then(|m| m.search.as_ref())
+            && q == query
+        {
+            return hits.clone();
+        }
+        let found = menus::search_items(items, query, i18n::current());
+        let hits: std::rc::Rc<[usize]> = found.into_iter().filter_map(|hit| items.iter().position(|i| std::ptr::eq(i, hit))).collect();
+        if let Some(m) = self.studio.menu_items.as_mut() {
+            m.search = Some((query.to_string(), hits.clone()));
+        }
+        hits
     }
 
     /// Actions: the shell's quick actions and every PhotoCraft menu, a column of menus beside
@@ -1189,14 +1214,13 @@ impl ModeShell {
         });
         ui.add_space(10.0);
         let query = self.studio.search.trim().to_string();
-        let lang = i18n::current();
         if !query.is_empty() {
+            let found = self.search_hits(items, &query);
             egui::ScrollArea::vertical().id_salt("photocraft-mobile-actions-search").auto_shrink([false, false]).show(ui, |ui| {
-                let found = menus::search_items(items, &query, lang);
                 if found.is_empty() {
                     ui.label(egui::RichText::new(tr("Nothing found", "Nada encontrado")).color(t.text_faint));
                 }
-                for item in found.into_iter().take(80) {
+                for item in found.iter().filter_map(|&i| items.get(i)).take(80) {
                     let path = path_label(&item.path);
                     if list_row(ui, t, &item_label(item), Some(&path), item.enabled, item.checked).clicked() {
                         acts.push(Act::Command(item.id.clone()));
