@@ -11,12 +11,14 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 
 ## Resumo
 
+✅ marca os itens já feitos.
+
 | # | Item | Prior. | Esforço |
 |---|---|---|---|
 | 1 | Recuperação após falha ou encerramento pelo Android | P0 | M |
 | 2 | Salvar um arquivo aberto pelo seletor não chega ao original | P0 | M |
 | 3 | O texto do teclado na tela não chega aos campos | P0 | M |
-| 4 | Fixar a versão do PhotoCraft usada | P0 | P |
+| 4 | Fixar a versão do PhotoCraft usada ✅ | P0 | P |
 | 5 | Amostras intermediárias da caneta | P1 | M |
 | 6 | Caneta com outro dedo já na tela | P1 | P |
 | 7 | Rejeição de palma e desfazer acidental | P1 | M |

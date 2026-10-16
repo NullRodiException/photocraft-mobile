@@ -1,0 +1,3 @@
+# The PhotoCraft commit (github.com/storytold/photocraft) this project was last tested with.
+# `cargo xtask upstream` compares ../photocraft with it, and CI checks it out.
+db46713c2ca0140e119956ed695cf92837fc50e3

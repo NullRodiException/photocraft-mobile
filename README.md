@@ -118,6 +118,24 @@ cargo run --release -p photocraft-mobile-shell --example frame_bench -- --frames
 O `Cargo.lock` começou como cópia do lock do PhotoCraft, para usar as mesmas versões testadas.
 Ao atualizar o checkout do PhotoCraft, copie o lock de novo se o build reclamar de versões.
 
+### A versão do PhotoCraft
+
+O PhotoCraft entra por caminho, então o build usa o commit que estiver em `../photocraft`. O
+arquivo `photocraft.rev` guarda o commit com que este projeto foi testado por último.
+
+```sh
+cargo xtask upstream            # o ../photocraft está no commit testado?
+cargo xtask upstream --accept   # grava o commit atual do ../photocraft como testado
+```
+
+Para atualizar o PhotoCraft:
+1. `git -C ../photocraft pull --ff-only upstream main`;
+2. rodar os testes e o Clippy (`cargo test`, `cargo clippy --all-targets -- -D warnings`) e conferir
+   o app;
+3. `cargo xtask upstream --accept` e um commit do `photocraft.rev` (com o `Cargo.lock`, se mudou).
+
+Para voltar ao commit testado: `git -C ../photocraft checkout <commit do photocraft.rev>`.
+
 ## Regras (herdadas do PhotoCraft)
 
 - Nada de `unwrap`/`expect`/`panic!` fora de testes (`#![deny(...)]` em cada crate).

@@ -11,6 +11,10 @@
 //! Finds the SDK in `ANDROID_HOME`, `ANDROID_SDK_ROOT` or `%LOCALAPPDATA%\Android\Sdk`, and uses
 //! its newest NDK. Gradle runs on `JAVA_HOME` (JDK 17+).
 //!
+//! `cargo xtask upstream [--accept]` reports whether `../photocraft` is at the commit this project
+//! was last tested with (`photocraft.rev`). `--accept` records the checkout's current commit there;
+//! run it after the build and the tests pass on that commit.
+//!
 //! `cargo xtask icons` renders PhotoCraft's app icon (`../photocraft/assets/app-icon/photocraft.svg`)
 //! into the foreground layer of the Android adaptive icon, one PNG per screen density, under
 //! `apps/android/src/main/res/mipmap-*/`. The PNGs are committed; rerun it when the icon changes.
@@ -26,13 +30,21 @@ const LIB: &str = "libphotocraft_mobile.so";
 /// Must match `minSdk` in apps/android/build.gradle.kts.
 const MIN_SDK: &str = "26";
 const PROFILE: &str = "android-release";
+/// The PhotoCraft commit this project was last tested with (at the workspace root).
+const UPSTREAM_REV: &str = "photocraft.rev";
+
+const USAGE: &str = "usage: cargo xtask android [--abi arm64-v8a,x86_64] [--install] [--run] [--logcat]
+       cargo xtask upstream [--accept]
+       cargo xtask icons";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let rest = args.get(1..).unwrap_or_default();
     let result = match args.first().map(String::as_str) {
-        Some("android") => android(args.get(1..).unwrap_or_default()),
+        Some("android") => android(rest),
+        Some("upstream") => upstream(rest),
         Some("icons") => icons(),
-        _ => Err("usage: cargo xtask android [--abi arm64-v8a,x86_64] [--install] [--run] [--logcat]\n       cargo xtask icons".into()),
+        _ => Err(USAGE.into()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -55,6 +67,16 @@ fn sdk_dir() -> Result<PathBuf, String> {
         .chain(std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Android").join("Sdk")))
         .find(|p| p.is_dir())
         .ok_or_else(|| "Android SDK not found: set ANDROID_HOME".into())
+}
+
+/// The SDK, and the NDK to build with: `ANDROID_NDK_HOME`, else the SDK's newest NDK.
+fn sdk_and_ndk() -> Result<(PathBuf, PathBuf), String> {
+    let sdk = sdk_dir()?;
+    let ndk = match std::env::var_os("ANDROID_NDK_HOME").filter(|v| !v.is_empty()) {
+        Some(n) => PathBuf::from(n),
+        None => newest(&sdk.join("ndk"), |p| p.join("source.properties").is_file())?,
+    };
+    Ok((sdk, ndk))
 }
 
 /// The entry of `dir` that sorts last by numeric version (`28.2.13676358`).
@@ -113,11 +135,7 @@ fn android(args: &[String]) -> Result<(), String> {
         .unwrap_or_else(|| vec!["arm64-v8a".into(), "x86_64".into()]);
 
     let root = root()?;
-    let sdk = sdk_dir()?;
-    let ndk = match std::env::var_os("ANDROID_NDK_HOME").filter(|v| !v.is_empty()) {
-        Some(n) => PathBuf::from(n),
-        None => newest(&sdk.join("ndk"), |p| p.join("source.properties").is_file())?,
-    };
+    let (sdk, ndk) = sdk_and_ndk()?;
     let adb = sdk.join("platform-tools").join(exe("adb"));
     let out = root.join("target").join("android");
     let jni_libs = out.join("jniLibs");
@@ -171,6 +189,80 @@ fn android(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Where `../photocraft` stands against the commit in `photocraft.rev`.
+#[derive(Debug, PartialEq, Eq)]
+struct UpstreamState {
+    head: String,
+    recorded: Option<String>,
+    /// `../photocraft` has uncommitted changes to tracked files.
+    dirty: bool,
+}
+
+impl UpstreamState {
+    fn tested(&self) -> bool {
+        self.recorded.as_deref() == Some(self.head.as_str()) && !self.dirty
+    }
+
+    fn describe(&self) -> String {
+        let short = |rev: &str| rev.get(..10).unwrap_or(rev).to_string();
+        let dirty = if self.dirty { ", with uncommitted changes" } else { "" };
+        match &self.recorded {
+            _ if self.tested() => format!("../photocraft is at the tested commit {} ({UPSTREAM_REV})", short(&self.head)),
+            Some(rev) => format!(
+                "note: ../photocraft is at {}{dirty}, but {UPSTREAM_REV} records {}. Once the tests pass on it, `cargo xtask upstream --accept` records it.",
+                short(&self.head),
+                short(rev)
+            ),
+            None => format!(
+                "note: ../photocraft is at {}{dirty}, and there is no {UPSTREAM_REV} yet (`cargo xtask upstream --accept` writes it)",
+                short(&self.head)
+            ),
+        }
+    }
+}
+
+/// The commit `photocraft.rev` names: its first line that isn't empty or a `#` comment.
+fn recorded_rev(text: &str) -> Option<String> {
+    text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_string)
+}
+
+fn git_output(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let out = Command::new("git").arg("-C").arg(dir).args(args).output().map_err(|e| format!("couldn't run git: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("git {} in {}: {}", args.join(" "), dir.display(), String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn upstream_state(root: &Path) -> Result<UpstreamState, String> {
+    let photocraft = root.join("..").join("photocraft");
+    let head = git_output(&photocraft, &["rev-parse", "HEAD"])?;
+    let dirty = !git_output(&photocraft, &["status", "--porcelain", "--untracked-files=no"])?.is_empty();
+    let recorded = std::fs::read_to_string(root.join(UPSTREAM_REV)).ok().as_deref().and_then(recorded_rev);
+    Ok(UpstreamState { head, recorded, dirty })
+}
+
+fn upstream(args: &[String]) -> Result<(), String> {
+    let root = root()?;
+    let state = upstream_state(&root)?;
+    if !args.iter().any(|a| a == "--accept") {
+        eprintln!("{}", state.describe());
+        return Ok(());
+    }
+    if state.dirty {
+        return Err("../photocraft has uncommitted changes, so no single commit matches what was tested".into());
+    }
+    let text = format!(
+        "# The PhotoCraft commit (github.com/storytold/photocraft) this project was last tested with.\n\
+         # `cargo xtask upstream` compares ../photocraft with it, and CI checks it out.\n{}\n",
+        state.head
+    );
+    let path = root.join(UPSTREAM_REV);
+    std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+    eprintln!("{UPSTREAM_REV}: {}", state.head);
+    Ok(())
+}
+
 /// Adaptive icon geometry (dp): the 108 × 108 foreground layer, of which launchers show the
 /// middle 72 × 72 through their mask (circle, squircle, rounded square).
 const ICON_LAYER_DP: f32 = 108.0;
@@ -219,6 +311,23 @@ mod tests {
         assert_eq!(next_build_number(None), 2, "the first numbered build follows versionCode 1");
         assert_eq!(next_build_number(Some("garbage")), 2);
         assert_eq!(next_build_number(Some(&u32::MAX.to_string())), u32::MAX);
+    }
+
+    #[test]
+    fn the_recorded_rev_is_the_first_line_that_isnt_a_comment() {
+        assert_eq!(recorded_rev("# note\n\n  abc123  \nlater\n").as_deref(), Some("abc123"));
+        assert_eq!(recorded_rev("# only a comment\n"), None);
+        assert_eq!(recorded_rev(""), None);
+    }
+
+    #[test]
+    fn upstream_counts_as_tested_only_at_the_recorded_clean_commit() {
+        let state = |recorded: Option<&str>, dirty| UpstreamState { head: "abc".into(), recorded: recorded.map(str::to_string), dirty };
+        assert!(state(Some("abc"), false).tested());
+        assert!(!state(Some("abc"), true).tested());
+        assert!(!state(Some("def"), false).tested());
+        assert!(!state(None, false).tested());
+        assert!(state(Some("def"), false).describe().contains("--accept"));
     }
 
     #[test]
