@@ -11,9 +11,14 @@
 //! Finds the SDK in `ANDROID_HOME`, `ANDROID_SDK_ROOT` or `%LOCALAPPDATA%\Android\Sdk`, and uses
 //! its newest NDK. Gradle runs on `JAVA_HOME` (JDK 17+).
 //!
+//! `cargo xtask ci [--no-android]` is the check to run before a commit. It runs rustfmt, Clippy with
+//! warnings as errors, the tests, and Clippy on the Android crate for arm64-v8a through cargo-ndk
+//! (`--no-android` skips that step). At the end it notes whether `../photocraft` is at the commit
+//! recorded in `photocraft.rev`.
+//!
 //! `cargo xtask upstream [--accept]` reports whether `../photocraft` is at the commit this project
 //! was last tested with (`photocraft.rev`). `--accept` records the checkout's current commit there;
-//! run it after the build and the tests pass on that commit.
+//! run it after `cargo xtask ci` passes on that commit.
 //!
 //! `cargo xtask icons` renders PhotoCraft's app icon (`../photocraft/assets/app-icon/photocraft.svg`)
 //! into the foreground layer of the Android adaptive icon, one PNG per screen density, under
@@ -34,6 +39,7 @@ const PROFILE: &str = "android-release";
 const UPSTREAM_REV: &str = "photocraft.rev";
 
 const USAGE: &str = "usage: cargo xtask android [--abi arm64-v8a,x86_64] [--install] [--run] [--logcat]
+       cargo xtask ci [--no-android]
        cargo xtask upstream [--accept]
        cargo xtask icons";
 
@@ -42,6 +48,7 @@ fn main() -> ExitCode {
     let rest = args.get(1..).unwrap_or_default();
     let result = match args.first().map(String::as_str) {
         Some("android") => android(rest),
+        Some("ci") => ci(rest),
         Some("upstream") => upstream(rest),
         Some("icons") => icons(),
         _ => Err(USAGE.into()),
@@ -189,6 +196,39 @@ fn android(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn ci(args: &[String]) -> Result<(), String> {
+    let root = root()?;
+    let cargo = |args: &[&str]| run(Command::new("cargo").current_dir(&root).args(args));
+    cargo(&["fmt", "--all", "--check"])?;
+    cargo(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"])?;
+    cargo(&["test", "--workspace"])?;
+    if args.iter().any(|a| a == "--no-android") {
+        eprintln!("skipped: Clippy on the Android crate (--no-android)");
+    } else {
+        // The Android crate compiles to nothing on other targets, so only an Android build checks it.
+        let (sdk, ndk) = sdk_and_ndk()?;
+        run(Command::new("cargo").current_dir(&root).env("ANDROID_HOME", &sdk).env("ANDROID_NDK_HOME", &ndk).args([
+            "ndk",
+            "--platform",
+            MIN_SDK,
+            "-t",
+            "arm64-v8a",
+            "clippy",
+            "-p",
+            "photocraft-mobile-android",
+            "--",
+            "-D",
+            "warnings",
+        ]))?;
+    }
+    match upstream_state(&root) {
+        Ok(state) => eprintln!("{}", state.describe()),
+        Err(e) => eprintln!("note: couldn't compare ../photocraft with {UPSTREAM_REV}: {e}"),
+    }
+    eprintln!("ci: all passed");
+    Ok(())
+}
+
 /// Where `../photocraft` stands against the commit in `photocraft.rev`.
 #[derive(Debug, PartialEq, Eq)]
 struct UpstreamState {
@@ -209,7 +249,7 @@ impl UpstreamState {
         match &self.recorded {
             _ if self.tested() => format!("../photocraft is at the tested commit {} ({UPSTREAM_REV})", short(&self.head)),
             Some(rev) => format!(
-                "note: ../photocraft is at {}{dirty}, but {UPSTREAM_REV} records {}. Once the tests pass on it, `cargo xtask upstream --accept` records it.",
+                "note: ../photocraft is at {}{dirty}, but {UPSTREAM_REV} records {}. Once `cargo xtask ci` passes on it, `cargo xtask upstream --accept` records it.",
                 short(&self.head),
                 short(rev)
             ),

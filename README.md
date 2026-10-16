@@ -103,6 +103,7 @@ nas do PhotoCraft, porque trocar de modo reescreve a barra de ferramentas.
 ```sh
 cargo run --release -p photocraft-mobile                 # o app
 cargo run --release -p photocraft-mobile -- foto.jpg
+cargo xtask ci                                           # antes de cada commit (abaixo)
 cargo test                                               # todos os testes
 cargo clippy --all-targets -- -D warnings
 cargo run --release -p photocraft-mobile-shell --example snapshot -- --out shots --size 1280x800
@@ -118,6 +119,16 @@ cargo run --release -p photocraft-mobile-shell --example frame_bench -- --frames
 O `Cargo.lock` começou como cópia do lock do PhotoCraft, para usar as mesmas versões testadas.
 Ao atualizar o checkout do PhotoCraft, copie o lock de novo se o build reclamar de versões.
 
+### Verificação antes do commit e CI
+
+`cargo xtask ci` roda, em ordem: `cargo fmt --check`, o Clippy com avisos como erro, os testes, o
+Clippy do crate Android para arm64-v8a (pelo `cargo ndk`, porque fora do Android esse crate compila
+vazio) e, por fim, diz se o `../photocraft` está no commit testado. `--no-android` pula o passo do
+Android quando não há NDK.
+
+A CI no GitHub (`.github/workflows/ci.yml`) roda o mesmo `cargo xtask ci` no Linux, com este
+repositório e o `storytold/photocraft` lado a lado, o PhotoCraft no commit do `photocraft.rev`.
+
 ### A versão do PhotoCraft
 
 O PhotoCraft entra por caminho, então o build usa o commit que estiver em `../photocraft`. O
@@ -130,8 +141,7 @@ cargo xtask upstream --accept   # grava o commit atual do ../photocraft como tes
 
 Para atualizar o PhotoCraft:
 1. `git -C ../photocraft pull --ff-only upstream main`;
-2. rodar os testes e o Clippy (`cargo test`, `cargo clippy --all-targets -- -D warnings`) e conferir
-   o app;
+2. `cargo xtask ci` e conferir o app;
 3. `cargo xtask upstream --accept` e um commit do `photocraft.rev` (com o `Cargo.lock`, se mudou).
 
 Para voltar ao commit testado: `git -C ../photocraft checkout <commit do photocraft.rev>`.

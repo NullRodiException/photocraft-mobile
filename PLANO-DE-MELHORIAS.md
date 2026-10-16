@@ -35,7 +35,7 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 | 18 | Painel de camadas pensado para toque | P2 | G |
 | 19 | Reagir à falta de memória | P2 | P |
 | 20 | Medir desempenho no aparelho | P2 | P |
-| 21 | `cargo xtask ci` e CI no GitHub | P2 | M |
+| 21 | `cargo xtask ci` e CI no GitHub ✅ | P2 | M |
 | 22 | Testes de snapshot da interface | P2 | M |
 | 23 | Ponte Java ↔ Rust testável | P2 | P |
 | 24 | Relatório de falhas | P2 | P |
