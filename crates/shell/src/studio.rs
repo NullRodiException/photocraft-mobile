@@ -161,6 +161,22 @@ pub struct Studio {
     /// point held.
     curve_edit: Option<Vec<[f32; 2]>>,
     curve_point: Option<usize>,
+    /// The live menu items the open popover lists, kept while it stays open (see [`MenuItems`]).
+    menu_items: Option<MenuItems>,
+}
+
+/// The live menu items, and the state they were built for. Building them checks every item's
+/// enabled and checked state, which scales with the document (layer lookups) and cost
+/// milliseconds per frame: a slow tablet felt it while the Actions popover was open. They are
+/// rebuilt only when that state changes, or on a frame with a tap or a key press, which covers what
+/// the state doesn't list. PhotoCraft's own menu bar caches its items the same way.
+#[derive(Debug)]
+struct MenuItems {
+    state: u64,
+    /// Built on a frame with a tap or a key press: the command it ran (applied after the rows are
+    /// drawn) shows next frame, so that frame builds them again.
+    input: bool,
+    items: std::rc::Rc<[MenuItem]>,
 }
 
 impl Default for Studio {
@@ -186,6 +202,7 @@ impl Default for Studio {
             dragging: None,
             curve_edit: None,
             curve_point: None,
+            menu_items: None,
         }
     }
 }
@@ -517,6 +534,36 @@ fn live_items(app: &PhotocraftApp) -> Vec<MenuItem> {
     menus::menu_items(app).into_iter().filter(|i| !i.path.is_empty() && !i.label.is_empty() && i.label != "-" && menus::is_live(&i.id)).collect()
 }
 
+/// What the menu rows' enabled and checked states depend on, cheaply. The same list as
+/// PhotoCraft's menu bar cache (`native_menu::state_hash`, which isn't public): commands run, the
+/// documents and the active one's revision and layers, the clipboard, running jobs, recent files,
+/// panels, view state, the tool and the language.
+fn menu_state(app: &PhotocraftApp) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let s = &app.session;
+    s.journal.len().hash(&mut h);
+    s.active_index().hash(&mut h);
+    for d in s.documents() {
+        (d.doc.id.0, &d.doc.name).hash(&mut h);
+    }
+    s.clipboard.is_some().hash(&mut h);
+    s.has_jobs().hash(&mut h);
+    if let Some(d) = s.active() {
+        (d.doc.id.0, d.revision, d.active_layer.map(|l| l.0), d.selected_layers.len(), d.isolated_layers.len()).hash(&mut h);
+    }
+    let ui = &app.ui;
+    (&ui.recent_files, &ui.workspace, ui.palette_open, ui.transform.is_some(), ui.text_edit.is_some(), ui.dialogs.len()).hash(&mut h);
+    serde_json::to_string(&(&ui.panels, &ui.extras, &ui.view, ui.theme, ui.tool)).unwrap_or_default().hash(&mut h);
+    s.prefs().interface.language.hash(&mut h);
+    h.finish()
+}
+
+/// A tap or a key press this frame: it may change state [`menu_state`] doesn't list.
+fn had_input(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::Key { pressed: true, .. } | Event::PointerButton { pressed: false, .. })))
+}
+
 fn item_label(item: &MenuItem) -> String {
     i18n::tr_id(i18n::current(), &item.id, &item.label).to_string()
 }
@@ -770,14 +817,14 @@ impl ModeShell {
         let open = self.studio.popover;
         let fg = rgb_of(self.app.session.tools.foreground);
         let transform_on = self.app.ui.transform.is_some() || tool == Tool::Move;
-        let selecting = SELECTION_TOOLS.contains(&format!("{tool:?}").as_str());
+        let selecting = SELECTION_TOOLS.contains(&crate::tool_name(tool));
         let home_on = {
             let n = self.app.session.documents().len();
             let auto = self.app.session.prefs().general.auto_show_home_screen;
             self.app.ui.chrome.shows_home(n, auto)
         };
         let layers_on = self.studio.side.is_some();
-        let quick: Vec<Tool> = mode.quick_tools().iter().filter_map(|n| Tool::from_name(n)).collect();
+        let quick: Vec<Tool> = mode.quick_tools().iter().filter_map(|n| crate::tool_named(n)).collect();
         let mut acts = Vec::new();
         let mut buttons: Vec<(Popover, Rect)> = Vec::new();
         let resp = egui::Panel::top("photocraft-mobile-top")
@@ -1020,6 +1067,8 @@ impl ModeShell {
     pub(crate) fn popover(&mut self, ctx: &egui::Context) {
         let Some(which) = self.studio.popover.filter(|_| !self.focus) else {
             self.studio.popover_rect = None;
+            // A popover opened later starts from fresh items.
+            self.studio.menu_items = None;
             return;
         };
         if which == Popover::Brushes && !self.app.ui.tool.is_brushlike() {
@@ -1101,12 +1150,30 @@ impl ModeShell {
         }
     }
 
+    /// The live menu items for the open popover, built again only when they may have changed
+    /// (see [`MenuItems`]).
+    fn menu_items(&mut self, ctx: &egui::Context) -> std::rc::Rc<[MenuItem]> {
+        let state = menu_state(&self.app);
+        let input = had_input(ctx);
+        if let Some(m) = &self.studio.menu_items
+            && m.state == state
+            && !m.input
+            && !input
+        {
+            return m.items.clone();
+        }
+        let items: std::rc::Rc<[MenuItem]> = live_items(&self.app).into();
+        self.studio.menu_items = Some(MenuItems { state, input, items: items.clone() });
+        items
+    }
+
     /// Actions: the shell's quick actions and every PhotoCraft menu, a column of menus beside
     /// the items of the one picked; a search over all of them.
     fn actions_body(&mut self, ui: &mut egui::Ui, t: &Tokens, acts: &mut Vec<Act>) {
-        let items = live_items(&self.app);
+        let items = self.menu_items(ui.ctx());
+        let items = &items[..];
         let mut tops: Vec<String> = Vec::new();
-        for item in &items {
+        for item in items {
             if let Some(top) = item.path.first()
                 && !tops.contains(top)
             {
@@ -1125,7 +1192,7 @@ impl ModeShell {
         let lang = i18n::current();
         if !query.is_empty() {
             egui::ScrollArea::vertical().id_salt("photocraft-mobile-actions-search").auto_shrink([false, false]).show(ui, |ui| {
-                let found = menus::search_items(&items, &query, lang);
+                let found = menus::search_items(items, &query, lang);
                 if found.is_empty() {
                     ui.label(egui::RichText::new(tr("Nothing found", "Nada encontrado")).color(t.text_faint));
                 }
@@ -1161,7 +1228,7 @@ impl ModeShell {
                 egui::ScrollArea::vertical().id_salt(("photocraft-mobile-actions-items", current.clone())).auto_shrink([false, false]).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     if current.is_empty() {
-                        self.quick_rows(ui, t, &items, acts);
+                        self.quick_rows(ui, t, items, acts);
                     } else {
                         menu_rows(ui, t, items.iter().filter(|i| i.path.first() == Some(&current)), 1, acts);
                     }
@@ -1214,7 +1281,7 @@ impl ModeShell {
     /// Adjustments: Image › Adjustments and the Filter menu.
     fn adjustments_body(&mut self, ui: &mut egui::Ui, t: &Tokens, acts: &mut Vec<Act>) {
         title(ui, t, tr("Adjustments", "Ajustes"));
-        let items = live_items(&self.app);
+        let items = self.menu_items(ui.ctx());
         egui::ScrollArea::vertical().id_salt("photocraft-mobile-adjustments").auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let adjust = items.iter().filter(|i| i.path.len() >= 2 && i.path[0] == "Image" && i.path[1] == "Adjustments");
@@ -1231,7 +1298,7 @@ impl ModeShell {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
             for name in self.modes.mode().selection_tools() {
-                if let Some(st) = Tool::from_name(name)
+                if let Some(st) = crate::tool_named(name)
                     && tool_tile(ui, t, st, st == tool).clicked()
                 {
                     acts.push(Act::Tool(st));
@@ -1239,7 +1306,7 @@ impl ModeShell {
             }
         });
         ui.add_space(8.0);
-        let items = live_items(&self.app);
+        let items = self.menu_items(ui.ctx());
         egui::ScrollArea::vertical().id_salt("photocraft-mobile-selection").auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             menu_rows(ui, t, items.iter().filter(|i| i.path.first().is_some_and(|p| p == "Select")), 1, acts);
@@ -1255,7 +1322,7 @@ impl ModeShell {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
                 for name in mode.tools() {
-                    if let Some(tt) = Tool::from_name(name)
+                    if let Some(tt) = crate::tool_named(name)
                         && tool_tile(ui, t, tt, tt == tool).clicked()
                     {
                         acts.push(Act::Tool(tt));

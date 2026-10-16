@@ -50,7 +50,25 @@ pub type InputHookFn = Box<dyn FnMut(&mut egui::RawInput, f32)>;
 
 /// Every PhotoCraft tool, by the name `Tool::from_name` and `edit.toolbar` read.
 pub fn tool_names() -> Vec<String> {
-    Tool::ALL.iter().map(|t| format!("{t:?}")).collect()
+    named_tools().iter().map(|(n, _)| n.clone()).collect()
+}
+
+/// Every PhotoCraft tool and its name, built once.
+fn named_tools() -> &'static [(String, Tool)] {
+    static NAMES: std::sync::OnceLock<Vec<(String, Tool)>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| Tool::ALL.iter().map(|&t| (format!("{t:?}"), t)).collect())
+}
+
+/// The tool called `name`, as `Tool::from_name` finds it, but cheap for the names the modes list.
+/// `from_name` builds a few strings for each of PhotoCraft's tools on every call, and the top bar
+/// and the tool popovers look tools up on every frame.
+pub fn tool_named(name: &str) -> Option<Tool> {
+    named_tools().iter().find(|(n, _)| n == name).map(|(_, t)| *t).or_else(|| Tool::from_name(name))
+}
+
+/// `tool`'s name, as the modes list it.
+pub fn tool_name(tool: Tool) -> &'static str {
+    named_tools().iter().find(|(_, t)| *t == tool).map_or("", |(n, _)| n.as_str())
 }
 
 /// Preferences › Interface › UI Scale values (PhotoCraft's `UiScale`), as display scales.
@@ -168,7 +186,7 @@ impl ModeShell {
         let plan = self.modes.switch(mode, &current, &all);
         photocraft_ui_egui::menus::invoke(&mut self.app, ctx, plan.workspace_command, json!({}))?;
         self.app.run("edit.toolbar", json!({ "hidden": plan.hidden }))?;
-        if let Some(tool) = Tool::from_name(&plan.tool) {
+        if let Some(tool) = tool_named(&plan.tool) {
             self.app.ui.tool = tool;
         }
         self.chrome_relayout();
@@ -396,8 +414,9 @@ impl ModeShell {
         arrow(egui::pos2(track.center().x, track.bottom() - 14.0), false);
         let reach = H / 2.0 - 30.0;
         let knob = egui::pos2(track.center().x, track.center().y - offset.clamp(-reach, reach));
+        // No repaint asked for: the knob only moves with the contact, whose events bring the
+        // next frame. A finger held still costs no frames.
         painter.circle(knob, 11.0, t.accent, Stroke::new(2.0, studio::ink_on(t.accent)));
-        ctx.request_repaint();
     }
 }
 
