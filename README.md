@@ -255,6 +255,13 @@ o app liga a recuperação do PhotoCraft (`services::recovery`, a mesma do app d
 O teclado só abre quando você toca num campo de texto. Diálogos que focam um campo sozinhos (como
 Novo Documento) não o abrem mais por cima dos botões.
 
+Na `GameActivity`, o teclado não manda teclas: ele edita um campo de texto da própria activity, e
+o winit 0.30 descarta essas edições (e a tecla de ação, ✓/Ir/Buscar). Por isso o app lê esse campo
+a cada frame (`apps/android/src/ime.rs`) e o `ImeMirror` (`crates/shell/src/ime.rs`) transforma o
+que mudou em texto e Backspace para o campo do egui. Sugestões e correções do teclado viram
+"apagar e digitar de novo", e a tecla de ação vira Enter. Quando outro campo ganha o foco, o
+campo da activity é esvaziado.
+
 ### Arquivos (seletor do Android)
 
 Arquivo › Abrir e Salvar / Salvar Como / Exportar usam o seletor de arquivos do sistema (Storage

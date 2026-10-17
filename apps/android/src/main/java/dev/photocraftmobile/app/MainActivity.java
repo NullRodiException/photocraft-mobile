@@ -25,6 +25,7 @@ import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.google.androidgamesdk.GameActivity;
+import com.google.androidgamesdk.gametextinput.State;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -193,6 +194,33 @@ public class MainActivity extends GameActivity {
         WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(getWindow(), decor);
         controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
         controller.hide(WindowInsetsCompat.Type.systemBars());
+    }
+
+    // ---- On-screen keyboard -----------------------------------------------------------------
+
+    /**
+     * The keyboard edited GameActivity's text field. winit drops these edits, so the Rust side reads
+     * the field itself (ime.rs): this only asks it for a frame.
+     */
+    @Override
+    public void stateChanged(State newState, boolean dismissed) {
+        super.stateChanged(newState, dismissed);
+        try {
+            nativeImeChanged();
+        } catch (UnsatisfiedLinkError e) {
+            // Not loaded yet: nothing has a text field.
+        }
+    }
+
+    /** The keyboard's action key (Done, Go, Search…), which winit also drops: Enter on the Rust side. */
+    @Override
+    public void onEditorAction(int action) {
+        super.onEditorAction(action);
+        try {
+            nativeImeAction();
+        } catch (UnsatisfiedLinkError e) {
+            // Not loaded yet.
+        }
     }
 
     // ---- Input ----------------------------------------------------------------------------
@@ -526,6 +554,12 @@ public class MainActivity extends GameActivity {
 
     /** touch_tools.rs */
     private static native void nativeTouchTool(int pointerId, int toolType);
+
+    /** ime.rs: the keyboard edited the text field. */
+    private static native void nativeImeChanged();
+
+    /** ime.rs: the keyboard's action key. */
+    private static native void nativeImeAction();
 
     /** lifecycle.rs: the app is going to the background. */
     private static native void nativeBackground();

@@ -17,11 +17,16 @@
 //!
 //! Files: open and save go through the system file picker (`files`, the Storage Access Framework).
 //!
+//! The on-screen keyboard: its text reaches egui through `ime`, since winit 0.30 drops
+//! GameActivity's text input events.
+//!
 //! On any other target this crate is empty, so the workspace still builds everywhere.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 #[cfg(target_os = "android")]
 mod files;
+#[cfg(target_os = "android")]
+mod ime;
 #[cfg(target_os = "android")]
 mod lifecycle;
 #[cfg(target_os = "android")]
@@ -98,6 +103,8 @@ mod android {
         let first_run = !services::has_preferences(config_dir.as_deref());
         // The picked documents' cache copies, from earlier launches too.
         crate::files::init(config_dir.clone());
+        // The on-screen keyboard's text field, which winit doesn't read (see `ime`).
+        let ime_app = app.clone();
         let mut options = eframe::NativeOptions { android_app: Some(app), renderer: eframe::Renderer::Wgpu, ..Default::default() };
         // The GPU's own texture and buffer size limits, as PhotoCraft's desktop and web apps ask
         // for. egui's default caps textures at 8192 px, which sends any larger image (a 200 MP
@@ -129,6 +136,7 @@ mod android {
                 app.ui.panels.rail = false;
                 crate::pen::install(app.stylus.feed.clone(), cc.egui_ctx.clone());
                 crate::lifecycle::install(cc.egui_ctx.clone());
+                crate::ime::install(ime_app, cc.egui_ctx.clone());
                 let modes = services::load_modes(config_dir.as_deref());
                 let settings = services::load_settings(config_dir.as_deref());
                 let (modes_dir, settings_dir) = (config_dir.clone(), config_dir.clone());
@@ -136,7 +144,10 @@ mod android {
                     .on_change(Box::new(move |m| services::save_modes(modes_dir.as_deref(), m)))
                     .with_settings(settings, Box::new(move |s| services::save_settings(settings_dir.as_deref(), s)))
                     .with_touch_kind(Box::new(crate::touch_tools::tool_of))
-                    .with_input_hook(Box::new(crate::pen::input_hook))
+                    .with_input_hook(Box::new(|raw, pixels_per_point| {
+                        crate::pen::input_hook(raw, pixels_per_point);
+                        crate::ime::input_hook(raw);
+                    }))
                     .with_platform_events(Box::new(crate::lifecycle::events));
                 Ok(Box::new(shell))
             }),
