@@ -18,7 +18,8 @@
 //! again still reaches the document after Android restarted the app. `MainActivity` keeps the URI
 //! permissions across restarts too.
 //!
-//! At start-up, [`clean_cache`] deletes the cache copies that nothing will open again.
+//! At start-up, [`clean_cache`] deletes the cache copies that nothing will open again, and has the
+//! recent files' copies that Android deleted with the cache copied back from their documents.
 //!
 //! Other apps: "Open with" and "Share" reach `MainActivity`, which copies the documents into the
 //! cache the same way and hands the paths over (`nativeOpenFiles`); PhotoCraft opens them as OS
@@ -26,8 +27,8 @@
 //! the share sheet or the gallery.
 //!
 //! Requests travel as tab-separated lines (`open\t<id>\t<multiple>`, `save\t<id>\t<name>`,
-//! `export\t<path>\t<uri>`, `release\t<uri>`, `share\t<path>`, `image\t<send|gallery>\t<path>`),
-//! so the JNI calls carry only strings and numbers.
+//! `export\t<path>\t<uri>`, `restore\t<path>\t<uri>`, `release\t<uri>`, `share\t<path>`,
+//! `image\t<send|gallery>\t<path>`), so the JNI calls carry only strings and numbers.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -142,10 +143,15 @@ pub fn share_dir() -> Option<PathBuf> {
     cache_dir().map(|c| c.join(SHARE_DIR))
 }
 
-/// Deletes the picked documents' cache copies that nothing will open again: every folder under
-/// `saf-open/` and `saf-save/` that holds none of `keep` (the recent files, and the documents crash
-/// recovery may reopen). Their links go too, and `MainActivity` gives back the URI permissions no
-/// other link uses. Images exported to share last time go too.
+/// Tidies the picked documents' cache copies at start-up:
+/// - deletes the ones nothing will open again: every folder under `saf-open/` and `saf-save/` that
+///   holds none of `keep` (the recent files, and the documents crash recovery may reopen), with
+///   their links;
+/// - asks `MainActivity` to copy back the ones in `keep` that Android deleted with the cache
+///   (`restore`), so a recent file still opens, and forgets the other links whose copy is gone;
+/// - gives back (`release`) the URI permissions no remaining link uses.
+///
+/// Images exported to share last time go too.
 pub fn clean_cache(keep: &[String]) {
     let Some(cache) = cache_dir() else {
         log::warn!("{CACHE_ENV} isn't set: the picked documents' cache copies stay");
@@ -158,9 +164,6 @@ pub fn clean_cache(keep: &[String]) {
         log::warn!("couldn't delete {}: {e}", shared.display());
     }
     let stale = photocraft_mobile_shell::saf::stale_dirs(&cache, keep, launch());
-    if stale.is_empty() {
-        return;
-    }
     let mut removed = 0;
     for dir in &stale {
         match std::fs::remove_dir_all(dir) {
@@ -168,15 +171,26 @@ pub fn clean_cache(keep: &[String]) {
             Err(e) => log::warn!("couldn't delete {}: {e}", dir.display()),
         }
     }
-    let released = with_links(|links| {
+    let (mut released, missing) = with_links(|links| {
         let released: Vec<String> = stale.iter().flat_map(|dir| links.forget_under(dir)).collect();
+        let missing = links.missing(keep, launch());
         links.save(CONFIG_DIR.get().and_then(|d| d.as_deref()));
-        released
+        (released, missing)
     });
+    released.extend(missing.released);
+    for link in &missing.restore {
+        push(format!("restore\t{}\t{}", clean(&link.path), clean(&link.uri)));
+    }
     for uri in &released {
         push(format!("release\t{}", clean(uri)));
     }
-    log::info!("cache: deleted {removed} picked-document folder(s) nothing opens again, released {} URI permission(s)", released.len());
+    if removed > 0 || !released.is_empty() || !missing.restore.is_empty() {
+        log::info!(
+            "cache: deleted {removed} picked-document folder(s) nothing opens again, copying back {} recent file(s) the cache lost, released {} URI permission(s)",
+            missing.restore.len(),
+            released.len()
+        );
+    }
 }
 
 fn push(line: String) {

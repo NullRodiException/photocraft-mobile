@@ -320,6 +320,12 @@ Access Framework, `apps/android/src/files.rs` + `MainActivity.java`):
   que nenhum arquivo recente nem a recuperação usam são apagadas, junto com os vínculos delas. A
   `MainActivity` devolve as permissões de URI que mais nenhum vínculo usa. Por isso uma cópia
   continua no cache enquanto o arquivo estiver nos recentes do PhotoCraft.
+- **Recentes depois de o Android limpar o cache:** o sistema pode apagar o cache de um app quando
+  falta espaço. Ao abrir o app, a cópia de um recente que sumiu é copiada de novo do documento
+  original (pedido `restore`, gravado com outro nome até ficar inteiro), e o recente volta a abrir.
+  Isso vale para o que foi aberto ou salvo pelo seletor, cuja permissão fica guardada. Um arquivo
+  recebido de outro app (Compartilhar) não volta, porque a permissão do outro app acaba com a
+  activity. Os vínculos sem cópia que nenhum recente usa são esquecidos.
 - Pedidos e respostas trafegam como linhas de texto pelo JNI (a `MainActivity` consulta os pedidos
   a cada 150 ms), sem nenhum bloco `unsafe`.
 - Escolher pasta ainda não é suportado.

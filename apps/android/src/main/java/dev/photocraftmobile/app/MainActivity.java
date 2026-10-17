@@ -393,6 +393,9 @@ public class MainActivity extends GameActivity {
                     case "export":
                         export(f[1], f[2]);
                         break;
+                    case "restore":
+                        restore(f[1], f[2]);
+                        break;
                     case "release":
                         release(f[1]);
                         break;
@@ -692,6 +695,25 @@ public class MainActivity extends GameActivity {
                     Toast.makeText(this, text("No app can receive it", "Nenhum app pode recebê-lo"), Toast.LENGTH_SHORT).show();
                 }
             });
+        });
+    }
+
+    /**
+     * A recent file's cache copy that Android deleted with the cache: copied again from its
+     * document, so the recent file opens. A document that is gone, or whose permission was taken
+     * back, stays missing, and opening it says so.
+     */
+    private void restore(String path, String uriText) {
+        Uri uri = Uri.parse(uriText);
+        File target = new File(path);
+        // Under another name until it is whole, so an early open never reads half a file.
+        File part = new File(path + ".part");
+        io.execute(() -> {
+            if (!copy(uri, part) || !part.renameTo(target)) {
+                android.util.Log.w("photocraft-mobile", "couldn't copy back " + target.getName() + " from its document");
+                //noinspection ResultOfMethodCallIgnored
+                part.delete();
+            }
         });
     }
 

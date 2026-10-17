@@ -122,13 +122,49 @@ impl Links {
     /// Forgets the links of the files under `dir` (a cache folder that is being deleted). Returns
     /// the URIs that no remaining link uses, so the app can give their permission back.
     pub fn forget_under(&mut self, dir: &Path) -> Vec<String> {
-        let (gone, kept): (Vec<Link>, Vec<Link>) = std::mem::take(&mut self.links).into_iter().partition(|l| Path::new(&l.path).starts_with(dir));
+        self.forget(|l| Path::new(&l.path).starts_with(dir))
+    }
+
+    /// Forgets the links `gone` picks; returns the URIs no remaining link uses.
+    fn forget(&mut self, gone: impl Fn(&Link) -> bool) -> Vec<String> {
+        let (gone, kept): (Vec<Link>, Vec<Link>) = std::mem::take(&mut self.links).into_iter().partition(gone);
         self.links = kept;
         let mut released: Vec<String> = gone.into_iter().map(|l| l.uri).filter(|u| !self.links.iter().any(|l| &l.uri == u)).collect();
         released.sort();
         released.dedup();
         released
     }
+
+    /// The links whose cache copy is gone (Android may clear an app's cache when storage runs
+    /// low). The ones in `keep` (the recent files, and what crash recovery may reopen) are to be
+    /// copied again from their document, so a recent file still opens. The others are forgotten,
+    /// and the URIs no remaining link uses come back to be given up. A folder this launch made
+    /// (an id at or past `launch`) may still be filling, so its links are left alone.
+    pub fn missing(&mut self, keep: &[String], launch: i64) -> Missing {
+        let gone = |l: &Link| !made_since(Path::new(&l.path), launch) && !Path::new(&l.path).exists();
+        let restore = self.links.iter().filter(|l| gone(l) && keep.contains(&l.path)).cloned().collect();
+        let released = self.forget(|l| gone(l) && !keep.contains(&l.path));
+        Missing { restore, released }
+    }
+}
+
+/// What [`Links::missing`] found.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Missing {
+    /// Copy these documents back to their cache path.
+    pub restore: Vec<Link>,
+    /// Give up the permission to these URIs.
+    pub released: Vec<String>,
+}
+
+/// `path` lies in a cache folder this launch made.
+fn made_since(path: &Path, launch: i64) -> bool {
+    path.parent().is_some_and(|dir| folder_made_since(dir, launch))
+}
+
+/// This launch made the cache folder `dir`: its id is at or past `launch`.
+fn folder_made_since(dir: &Path, launch: i64) -> bool {
+    dir.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<i64>().ok()).is_some_and(|id| id >= launch)
 }
 
 /// The picker's cache folders (`<cache>/saf-open/<id>`, `<cache>/saf-save/<id>`) that hold none of
@@ -140,8 +176,7 @@ pub fn stale_dirs(cache: &Path, keep: &[String], launch: i64) -> Vec<PathBuf> {
     for sub in [OPEN_DIR, SAVE_DIR] {
         let Ok(entries) = std::fs::read_dir(cache.join(sub)) else { continue };
         for dir in entries.filter_map(|e| e.ok().map(|e| e.path())) {
-            let current = dir.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<i64>().ok()).is_some_and(|id| id >= launch);
-            if !current && !keep.iter().any(|k| Path::new(k).starts_with(&dir)) {
+            if !folder_made_since(&dir, launch) && !keep.iter().any(|k| Path::new(k).starts_with(&dir)) {
                 stale.push(dir);
             }
         }
@@ -212,6 +247,28 @@ mod tests {
         assert_eq!(released, ["content://a"], "content://b still has a link");
         assert_eq!(links.len(), 1);
         assert!(links.get("/c/saf-save/2/b.psd").is_some());
+    }
+
+    #[test]
+    fn recent_files_the_cache_lost_come_back_and_the_rest_is_forgotten() {
+        let cache = temp_dir("missing");
+        let path = |p: &str| cache.join(p).to_string_lossy().into_owned();
+        let (here, recent, old, filling) =
+            (path("saf-open/1/here.psd"), path("saf-open/2/recent.psd"), path("saf-save/3/old.png"), path("saf-open/900/new.png"));
+        std::fs::create_dir_all(cache.join("saf-open/1")).unwrap();
+        std::fs::write(&here, b"x").unwrap();
+        let mut links = Links::default();
+        links.link(&here, "content://here", true);
+        links.link(&recent, "content://recent", true);
+        links.link(&old, "content://old", true);
+        links.link(&filling, "content://new", false);
+        let found = links.missing(&[here.clone(), recent.clone()], 900);
+        assert_eq!(found.restore, [Link { path: recent.clone(), uri: "content://recent".into(), writable: true }]);
+        assert_eq!(found.released, ["content://old"]);
+        assert!(links.get(&old).is_none(), "nothing keeps it: forgotten");
+        assert!(links.get(&here).is_some() && links.get(&recent).is_some());
+        assert!(links.get(&filling).is_some(), "this launch's folder may still be filling");
+        let _ = std::fs::remove_dir_all(&cache);
     }
 
     #[test]

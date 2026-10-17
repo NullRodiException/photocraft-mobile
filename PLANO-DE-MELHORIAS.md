@@ -25,7 +25,7 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 | 8 | Gestos que faltam (girar, encaixar, tela cheia, conta-gotas) ✅ | P1 | M |
 | 9 | Latência do traço ✅ (passos 1 e 2; o 3 depende do PhotoCraft) | P1 | M–G |
 | 10 | Cache de arquivos que só cresce ✅ | P1 | P |
-| 11 | Arquivos recentes que sobrevivem ao cache | P1 | M |
+| 11 | Arquivos recentes que sobrevivem ao cache ✅ | P1 | M |
 | 12 | Abrir com, Compartilhar e Salvar na Galeria ✅ | P1 | M |
 | 13 | Área de transferência de imagens e links | P2 | M |
 | 14 | Layout para celular em retrato | P2 | M |
@@ -154,6 +154,7 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 - **Problema:** os recentes do PhotoCraft guardam o caminho no cache. Quando o item 10 ou o próprio Android limpar o cache, os recentes passam a falhar.
 - **Proposta:** com as URIs persistidas do item 2, ao iniciar, a `MainActivity` recopia para o cache os recentes que sumiram, antes de a tela inicial aparecer.
 - **Depende de:** item 2.
+- **Feito, com uma diferença:** a cópia acontece em segundo plano logo depois de a tela inicial aparecer, e não antes. Um arquivo grande tocado no primeiro segundo ainda pode falhar. Arquivos recebidos por Compartilhar não voltam, porque a permissão deles não pode ser guardada.
 
 ### 12. Abrir com, Compartilhar e Salvar na Galeria
 
