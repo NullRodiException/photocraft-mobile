@@ -235,6 +235,9 @@ crate Android usa `unsafe_code = "deny"` em vez de `forbid` e libera só esse it
   - A pressão e a inclinação vão para o Rust de toda caneta presente no evento, e não só do
     contato de que o evento trata. Antes, com a mão apoiada, a pressão ficava parada no valor do
     primeiro toque.
+  - Um contato com mais de 30 mm de largura (`touchMajor`) é palma, com ou sem caneta.
+  - Um contato que o Android reconhece como palma ao sair (`FLAG_CANCELED`, Android 13+) é
+    cancelado em vez de solto, então nunca vira toque de desfazer.
   - O `PalmFilter` não usa tipos do Android, e os testes dele rodam na JVM
     (`src/test/java`, pelo `cargo xtask ci`).
 - **Tela cheia imersiva** (`MainActivity.java`): barra de status, barra de navegação e a taskbar

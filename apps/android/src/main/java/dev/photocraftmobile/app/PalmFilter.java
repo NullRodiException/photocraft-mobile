@@ -17,6 +17,10 @@ import java.util.Set;
  *       screen never paints or navigates.
  *   <li>A finger the app already has is cancelled when the pen touches down. Otherwise egui would
  *       keep its pointer on that finger, and the pen couldn't paint.
+ *   <li>A contact wider than {@link #PALM_MM} is a palm, pen or no pen.
+ *   <li>A contact the system recognised as a palm when it lifted ({@code FLAG_CANCELED}, Android
+ *       13+) is cancelled rather than lifted, so the app never takes it for a tap (two- and
+ *       three-finger taps undo and redo).
  * </ul>
  *
  * A {@link MotionEvent} carries every contact on the screen, so an event that mixes the pen with
@@ -27,6 +31,8 @@ import java.util.Set;
 final class PalmFilter {
     /** How long after the pen leaves the screen a new finger touch is still taken for the palm. */
     static final long GRACE_MS = 500;
+    /** A contact wider than this (its touch major, in millimetres) is a palm: a fingertip is about 10. */
+    static final float PALM_MM = 30;
 
     /** What reaches the app for one event. */
     static final class Decision {
@@ -116,11 +122,18 @@ final class PalmFilter {
         }
     }
 
-    /**
-     * Decides what of an event reaches the app: {@code ids} and {@code tools} are each contact's
-     * pointer id and tool type, by index in the event.
-     */
+    /** {@link #onEvent(int, int, int[], int[], float[], long, boolean)} for contacts of no known size, not cancelled. */
     Decision onEvent(int actionMasked, int actionIndex, int[] ids, int[] tools, long eventTime) {
+        return onEvent(actionMasked, actionIndex, ids, tools, new float[ids.length], eventTime, false);
+    }
+
+    /**
+     * Decides what of an event reaches the app: {@code ids}, {@code tools} and {@code majorsMm} are
+     * each contact's pointer id, tool type and width (touch major, in millimetres; 0 when unknown),
+     * by index in the event. {@code canceled} is the event's {@code FLAG_CANCELED}: the contact that
+     * lifts was a palm.
+     */
+    Decision onEvent(int actionMasked, int actionIndex, int[] ids, int[] tools, float[] majorsMm, long eventTime, boolean canceled) {
         trackPen(actionMasked, actionIndex, tools, eventTime);
         if (actionMasked == MotionEvent.ACTION_DOWN) {
             // A new stream: nothing is down from before.
@@ -142,12 +155,19 @@ final class PalmFilter {
                     }
                 }
             } else if (isFinger(tool)) {
-                if (penNear(eventTime)) {
+                boolean palm = actionIndex < majorsMm.length && majorsMm[actionIndex] > PALM_MM;
+                if (palm || penNear(eventTime)) {
                     rejected.add(actor);
                 } else {
                     fingers.add(actor);
                 }
             }
+        }
+        if (lifts && canceled && fingers.contains(actor)) {
+            // The system found a palm: the app loses the contact instead of seeing it lift.
+            cancel.add(actionIndex);
+            fingers.remove(actor);
+            rejected.add(actor);
         }
         Decision decision = decide(actionMasked, actionIndex, ids, actor, lands || lifts, toArray(cancel));
         if (lifts) {

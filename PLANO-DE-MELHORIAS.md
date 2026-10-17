@@ -21,7 +21,7 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 | 4 | Fixar a versão do PhotoCraft usada ✅ | P0 | P |
 | 5 | Amostras intermediárias da caneta ✅ | P1 | M |
 | 6 | Caneta com outro dedo já na tela ✅ | P1 | P |
-| 7 | Rejeição de palma e desfazer acidental | P1 | M |
+| 7 | Rejeição de palma e desfazer acidental ✅ | P1 | M |
 | 8 | Gestos que faltam (girar, encaixar, tela cheia, conta-gotas) | P1 | M |
 | 9 | Latência do traço | P1 | M–G |
 | 10 | Cache de arquivos que só cresce ✅ | P1 | P |
@@ -115,7 +115,7 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 - **Proposta:**
   - A `MainActivity` avisa o Rust quando um ponteiro foi cancelado como palma. O `TouchRouter` não conta toque (nem desfazer ou refazer) num gesto que teve contato cancelado.
   - Descartar contatos muito largos (`getTouchMajor()`).
-  - Tornar o tempo de 0,5 s configurável.
+  - Tornar o tempo de 0,5 s configurável. (Ainda não feito: o tempo continua fixo em `PalmFilter.GRACE_MS`.)
 - **Onde:** `MainActivity.java`, `apps/android/src/touch_tools.rs`, `crates/shell/src/touch.rs`.
 - **Verificar:** um teste em `touch.rs` em que um contato cancelado não gera `tap`, além de teste manual com a mão.
 

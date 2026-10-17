@@ -102,6 +102,33 @@ public class PalmFilterTest {
     }
 
     @Test
+    public void aWideContactIsAPalmEvenWithThePenAway() {
+        PalmFilter f = new PalmFilter();
+        float[] wide = {PalmFilter.PALM_MM + 5};
+        assertTrue(f.onEvent(DOWN, 0, ids(0), tools(FINGER), wide, 1000, false).dropped());
+        assertTrue(f.onEvent(UP, 0, ids(0), tools(FINGER), wide, 1100, false).dropped());
+        float[] fingertip = {9};
+        assertSame(PalmFilter.Decision.PASS, f.onEvent(DOWN, 0, ids(1), tools(FINGER), fingertip, 2000, false));
+    }
+
+    @Test
+    public void aContactTheSystemCallsAPalmIsCancelledNotLifted() {
+        PalmFilter f = new PalmFilter();
+        f.onEvent(DOWN, 0, ids(0), tools(FINGER), 1000);
+        f.onEvent(POINTER_DOWN, 1, ids(0, 1), tools(FINGER, FINGER), 1010);
+        // Contact 1 lifts with FLAG_CANCELED: it is cancelled alone, and its lift doesn't reach the app.
+        PalmFilter.Decision palm = f.onEvent(POINTER_UP, 1, ids(0, 1), tools(FINGER, FINGER), new float[2], 1050, true);
+        assertArrayEquals(new int[] {1}, palm.cancel);
+        assertTrue(palm.dropped());
+        // The other finger goes on as usual.
+        assertSame(PalmFilter.Decision.PASS, f.onEvent(MOVE, 0, ids(0), tools(FINGER), 1060));
+        // The last contact lifting as a palm: cancelled too.
+        PalmFilter.Decision last = f.onEvent(UP, 0, ids(0), tools(FINGER), new float[1], 1100, true);
+        assertArrayEquals(new int[] {0}, last.cancel);
+        assertTrue(last.dropped());
+    }
+
+    @Test
     public void aMouseIsNeverTakenForAPalm() {
         PalmFilter f = new PalmFilter();
         f.onEvent(HOVER_MOVE, 0, ids(5), tools(PEN), 1000);

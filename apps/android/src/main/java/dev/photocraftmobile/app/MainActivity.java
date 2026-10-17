@@ -224,11 +224,17 @@ public class MainActivity extends GameActivity {
         int n = event.getPointerCount();
         int[] ids = new int[n];
         int[] tools = new int[n];
+        float[] majorsMm = new float[n];
+        float pixelsPerMm = getResources().getDisplayMetrics().xdpi / 25.4f;
         for (int i = 0; i < n; i++) {
             ids[i] = event.getPointerId(i);
             tools[i] = event.getToolType(i);
+            majorsMm[i] = pixelsPerMm > 0 ? event.getTouchMajor(i) / pixelsPerMm : 0;
         }
-        PalmFilter.Decision decision = palm.onEvent(event.getActionMasked(), event.getActionIndex(), ids, tools, event.getEventTime());
+        // Android 13+ marks a contact it recognised as a palm when it lifts.
+        boolean canceled = (event.getFlags() & MotionEvent.FLAG_CANCELED) != 0;
+        PalmFilter.Decision decision =
+                palm.onEvent(event.getActionMasked(), event.getActionIndex(), ids, tools, majorsMm, event.getEventTime(), canceled);
         // Every pen on the screen, whatever contact the event is about.
         reportPen(event, tools);
         if (decision.cancel.length > 0) {
