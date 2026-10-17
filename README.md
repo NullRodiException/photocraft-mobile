@@ -260,9 +260,15 @@ Novo Documento) não o abrem mais por cima dos botões.
 Arquivo › Abrir e Salvar / Salvar Como / Exportar usam o seletor de arquivos do sistema (Storage
 Access Framework, `apps/android/src/files.rs` + `MainActivity.java`):
 - **Abrir:** os documentos escolhidos são copiados para o cache do app e abertos de lá.
-- **Salvar:** o seletor cria o documento. O PhotoCraft grava num arquivo do cache ligado a ele, e
-  a `MainActivity` copia para o documento escolhido, com um aviso "Salvo". Salvar de novo o mesmo
-  arquivo vai direto para lá, sem abrir o seletor.
+- **Salvar Como / Exportar:** o seletor cria o documento. O PhotoCraft grava num arquivo do cache
+  ligado a ele, e a `MainActivity` copia para o documento escolhido, com um aviso "Salvo".
+- **Cada cópia no cache fica ligada ao seu documento** (`crates/shell/src/saf.rs`). Por isso Salvar
+  num documento aberto pelo seletor grava de volta no arquivo original, e salvar de novo um
+  documento salvo vai direto para ele, sem abrir o seletor. Os vínculos ficam em
+  `saf-links.json`, e a `MainActivity` guarda as permissões das URIs
+  (`takePersistableUriPermission`), então isso continua valendo depois de o Android reiniciar o app.
+- Um arquivo que o app só pode ler, ou uma cópia que perdeu o vínculo, recusa o Salvar com uma
+  mensagem pedindo Salvar Como. Antes, a gravação ia só para a cópia no cache e parecia salva.
 - Pedidos e respostas trafegam como linhas de texto pelo JNI (a `MainActivity` consulta os pedidos
   a cada 150 ms), sem nenhum bloco `unsafe`.
 - Escolher pasta ainda não é suportado.

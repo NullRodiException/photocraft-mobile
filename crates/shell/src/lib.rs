@@ -33,6 +33,7 @@ pub use studio::{BAR_HEIGHT, COMPACT_BELOW, Popover, SidePanel};
 pub use touch::ToolKind;
 
 pub mod pen;
+pub mod saf;
 pub mod scrub;
 pub mod services;
 pub mod studio;

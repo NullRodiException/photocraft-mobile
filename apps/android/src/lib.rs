@@ -45,8 +45,13 @@ mod android {
         Services {
             file_dialog: Some(Box::new(crate::files::file_dialog)),
             write: Some(Box::new(|path: &str, bytes: &[u8]| {
+                // The cache copy of a picked document is written, then copied to the document. A copy
+                // that can't reach its document refuses the write rather than look saved.
+                let document = crate::files::write_target(path)?;
                 services::write_atomic(std::path::Path::new(path), bytes)?;
-                crate::files::after_write(path);
+                if let Some(uri) = document {
+                    crate::files::export(path, &uri);
+                }
                 Ok(())
             })),
             ..services::base(config_dir)
@@ -91,6 +96,8 @@ mod android {
         // The system scale (dpi / 160), for the first run's larger UI.
         let native_scale = app.config().density().map(|dpi| dpi as f32 / 160.0);
         let first_run = !services::has_preferences(config_dir.as_deref());
+        // The picked documents' cache copies, from earlier launches too.
+        crate::files::init(config_dir.clone());
         let mut options = eframe::NativeOptions { android_app: Some(app), renderer: eframe::Renderer::Wgpu, ..Default::default() };
         // The GPU's own texture and buffer size limits, as PhotoCraft's desktop and web apps ask
         // for. egui's default caps textures at 8192 px, which sends any larger image (a 200 MP

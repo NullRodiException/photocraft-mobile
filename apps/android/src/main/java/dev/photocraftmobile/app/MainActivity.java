@@ -11,6 +11,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.system.ErrnoException;
 import android.system.Os;
@@ -32,10 +33,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -56,8 +55,10 @@ import java.util.concurrent.Executors;
  *       with its pressure, tilt, orientation and buttons: tilt for the brushes, the side button as
  *       the eraser, and the hover position for the brush outline.
  *   <li><b>Files.</b> Open and Save use the system file picker (Storage Access Framework). The
- *       Rust side queues requests that this activity polls; picked documents are copied into the
- *       app cache to open, and saves are written there and copied to the picked document.
+ *       Rust side queues requests that this activity polls. Picked documents are copied into the
+ *       app cache to open, and saves are written there and copied to the picked document. Each
+ *       copy stays linked to its document (with the permission kept across restarts), so saving
+ *       an opened document writes it back.
  * </ul>
  */
 public class MainActivity extends GameActivity {
@@ -67,6 +68,7 @@ public class MainActivity extends GameActivity {
     private static final long POLL_MS = 150;
     /** How long a pause waits for the Rust side to take the autosave request (ms). */
     private static final long BACKGROUND_WAIT_MS = 250;
+    private static final int GRANT_READ_WRITE = Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
     private static final int REQUEST_OPEN = 7101;
     private static final int REQUEST_SAVE = 7102;
     /** The device's RAM in MB, for PhotoCraft's GPU memory budgets (see {@link #tellRam}). */
@@ -81,8 +83,6 @@ public class MainActivity extends GameActivity {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
-    /** Save paths in the cache and the documents the picker created for them. */
-    private final Map<String, Uri> saveTargets = new HashMap<>();
     private long openRequest = -1;
     private long saveRequest = -1;
     private String saveName = "";
@@ -292,7 +292,7 @@ public class MainActivity extends GameActivity {
                         createDocument(Long.parseLong(f[1]), f[2]);
                         break;
                     case "export":
-                        export(f[1]);
+                        export(f[1], f[2]);
                         break;
                     default:
                         break;
@@ -308,6 +308,8 @@ public class MainActivity extends GameActivity {
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple);
+        // Saving an opened document writes it back, also after a restart.
+        intent.addFlags(GRANT_READ_WRITE | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         openRequest = id;
         try {
             startActivityForResult(intent, REQUEST_OPEN);
@@ -336,6 +338,7 @@ public class MainActivity extends GameActivity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         boolean ok = resultCode == RESULT_OK && data != null;
+        int grant = ok ? data.getFlags() & GRANT_READ_WRITE : 0;
         if (requestCode == REQUEST_OPEN && openRequest >= 0) {
             long id = openRequest;
             openRequest = -1;
@@ -357,6 +360,9 @@ public class MainActivity extends GameActivity {
                 for (Uri uri : uris) {
                     File target = new File(dir, safeName(displayName(uri)));
                     if (copy(uri, target)) {
+                        // Linked before PhotoCraft opens it, so its first Save already goes back.
+                        boolean writable = keepAccess(uri, grant) && supportsWrite(uri);
+                        nativeLink(target.getAbsolutePath(), uri.toString(), writable ? 1 : 0);
                         paths.append(target.getAbsolutePath()).append('\n');
                     }
                 }
@@ -374,17 +380,48 @@ public class MainActivity extends GameActivity {
             //noinspection ResultOfMethodCallIgnored
             dir.mkdirs();
             File target = new File(dir, safeName(saveName));
-            saveTargets.put(target.getAbsolutePath(), uri);
+            // The picker created this document for us: the app may write it.
+            keepAccess(uri, grant | GRANT_READ_WRITE);
+            nativeLink(target.getAbsolutePath(), uri.toString(), 1);
             nativeSaveResult(id, target.getAbsolutePath());
         }
     }
 
-    /** After the Rust side wrote a save into the cache: copy it to its picked document. */
-    private void export(String path) {
-        Uri uri = saveTargets.get(path);
-        if (uri == null) {
-            return;
+    /**
+     * Keeps the permission the picker granted to {@code uri} across restarts, so a later save still
+     * reaches the document. Returns whether that permission includes writing.
+     */
+    private boolean keepAccess(Uri uri, int grant) {
+        int modes = grant & GRANT_READ_WRITE;
+        try {
+            getContentResolver().takePersistableUriPermission(uri, modes);
+            return (modes & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0;
+        } catch (SecurityException e) {
+            // Not persistable with writing: keep reading at least.
         }
+        try {
+            getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (SecurityException e) {
+            // Only for this session.
+        }
+        return (modes & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0;
+    }
+
+    /** Whether the document's provider accepts writes to it (true when it doesn't say). */
+    private boolean supportsWrite(Uri uri) {
+        try (Cursor c = getContentResolver().query(uri, new String[] {DocumentsContract.Document.COLUMN_FLAGS}, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) {
+                return (c.getInt(0) & DocumentsContract.Document.FLAG_SUPPORTS_WRITE) != 0;
+            }
+        } catch (RuntimeException e) {
+            // Not a DocumentsProvider document: the grant decides.
+        }
+        return true;
+    }
+
+    /** After the Rust side wrote a picked document's cache copy: copy it to the document. */
+    private void export(String path, String uriText) {
+        Uri uri = Uri.parse(uriText);
         String name = new File(path).getName();
         io.execute(() -> {
             boolean ok;
@@ -475,4 +512,7 @@ public class MainActivity extends GameActivity {
 
     /** files.rs: where to write the save; empty when cancelled. */
     private static native void nativeSaveResult(long id, String path);
+
+    /** files.rs: the cache file {@code path} stands for the picked document {@code uri}. */
+    private static native void nativeLink(String path, String uri, int writable);
 }

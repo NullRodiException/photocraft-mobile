@@ -3,32 +3,76 @@
 //! PhotoCraft asks its `file_dialog` service for a file to open or a place to save, and writes
 //! saves through its `write` service. On Android a picker hands out content URIs, not paths, so:
 //!
-//! - **Open:** the request waits here until `MainActivity` picks it up ([`next_request`],
-//!   polled a few times a second), shows the picker, copies each chosen document into the app's
-//!   cache and hands the paths back (`nativeOpenResult`); PhotoCraft opens them as files.
-//! - **Save:** the picker creates the document; `MainActivity` answers with a cache path tied to
-//!   that URI (`nativeSaveResult`), PhotoCraft writes the file there, and [`after_write`] asks
-//!   `MainActivity` to copy it to the URI. Saving the same document again goes straight to its URI.
+//! - **Open:** the request waits here until `MainActivity` picks it up (polled a few times a
+//!   second). It shows the picker, copies each chosen document into the app's cache, links each
+//!   copy to its document (`nativeLink`) and hands the paths back (`nativeOpenResult`). PhotoCraft
+//!   opens them as files.
+//! - **Save:** the picker creates the document. `MainActivity` links a cache path to it and answers
+//!   with that path (`nativeSaveResult`), and PhotoCraft writes the file there.
+//! - **Writing a linked copy** (Save As, and Save on an opened or saved document) goes on to its
+//!   document: the `write` service checks [`write_target`] first, then asks `MainActivity` to copy
+//!   the file to the document ([`export`]). A copy the app may only read, or one that lost its
+//!   link, refuses the write, so it never looks saved while the document stays as it was.
+//!
+//! The links ([`photocraft_mobile_shell::saf::Links`]) are kept in the settings folder, so saving
+//! again still reaches the document after Android restarted the app. `MainActivity` keeps the URI
+//! permissions across restarts too.
 //!
 //! Requests travel as tab-separated lines (`open\t<id>\t<multiple>`, `save\t<id>\t<name>`,
-//! `export\t<path>`), so the JNI calls carry only strings and numbers.
+//! `export\t<path>\t<uri>`), so the JNI calls carry only strings and numbers.
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use jni::EnvUnowned;
 use jni::objects::{JClass, JString};
+use photocraft_mobile_shell::saf::{Links, WriteTarget};
 use photocraft_ui_egui::{FileDialogAnswer, FileDialogReply, FileDialogRequest};
 
 /// Lines waiting for `MainActivity`.
 static REQUESTS: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 /// Dialogs waiting for the user, by request id.
 static WAITING: Mutex<Vec<(i64, FileDialogReply)>> = Mutex::new(Vec::new());
+/// Request ids also name the cache folders of opened and saved documents, which outlive a launch
+/// (recent files, links): [`init`] starts them at the time, so a new launch never reuses one.
 static NEXT_ID: AtomicI64 = AtomicI64::new(1);
+/// The cache copies of picked documents (loaded by [`init`]).
+static LINKS: Mutex<Option<Links>> = Mutex::new(None);
+/// Where the links are saved (the settings folder).
+static CONFIG_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-/// The folder (under the app cache) that saves go through; only files in it are exported.
-const SAVE_DIR: &str = "/saf-save/";
+/// Load the saved links from `config_dir`; call once before the app starts.
+pub fn init(config_dir: Option<PathBuf>) {
+    let links = Links::load(config_dir.as_deref());
+    log::info!("{} picked document(s) linked", links.len());
+    *LINKS.lock().unwrap_or_else(PoisonError::into_inner) = Some(links);
+    let _ = CONFIG_DIR.set(config_dir);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().and_then(|d| i64::try_from(d.as_millis()).ok()).unwrap_or(1);
+    NEXT_ID.fetch_max(now, Ordering::Relaxed);
+}
+
+fn with_links<R>(f: impl FnOnce(&mut Links) -> R) -> R {
+    let mut links = LINKS.lock().unwrap_or_else(PoisonError::into_inner);
+    f(links.get_or_insert_with(Links::default))
+}
+
+/// What writing `path` involves: `Some(uri)` for the copy of a picked document (write it, then
+/// [`export`] it there), `None` for an ordinary file, `Err` when the write must not happen.
+pub fn write_target(path: &str) -> Result<Option<String>, String> {
+    with_links(|links| {
+        links.write_target(path).map(|target| match target {
+            WriteTarget::File => None,
+            WriteTarget::Document(uri) => Some(uri.to_string()),
+        })
+    })
+}
+
+/// After PhotoCraft wrote `path`: copy it to its picked document at `uri`.
+pub fn export(path: &str, uri: &str) {
+    push(format!("export\t{}\t{}", clean(path), clean(uri)));
+}
 
 fn push(line: String) {
     REQUESTS.lock().unwrap_or_else(PoisonError::into_inner).push_back(line);
@@ -55,13 +99,6 @@ pub fn file_dialog(request: FileDialogRequest, _frame: Option<&eframe::Frame>, r
     };
     WAITING.lock().unwrap_or_else(PoisonError::into_inner).push((id, reply));
     push(line);
-}
-
-/// After PhotoCraft wrote `path`: copy it to the document the save picker chose for it.
-pub fn after_write(path: &str) {
-    if path.contains(SAVE_DIR) {
-        push(format!("export\t{}", clean(path)));
-    }
 }
 
 fn answer(id: i64, answer: Option<FileDialogAnswer>) {
@@ -124,6 +161,31 @@ extern "system" fn Java_dev_photocraftmobile_app_MainActivity_nativeSaveResult<'
     env.with_env(|env| -> Result<(), jni::errors::Error> {
         let path = if path.is_null() { String::new() } else { path.try_to_string(env)? };
         answer(id, (!path.is_empty()).then_some(FileDialogAnswer::SaveTo(path)));
+        Ok(())
+    })
+    .resolve::<jni::errors::LogErrorAndDefault>()
+}
+
+/// `private static native void nativeLink(String path, String uri, int writable)`: the cache file
+/// `path` stands for the picked document `uri`, which the app may write when `writable` isn't 0.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_photocraftmobile_app_MainActivity_nativeLink<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    path: JString<'caller>,
+    uri: JString<'caller>,
+    writable: i32,
+) {
+    env.with_env(|env| -> Result<(), jni::errors::Error> {
+        if path.is_null() || uri.is_null() {
+            return Ok(());
+        }
+        let (path, uri) = (path.try_to_string(env)?, uri.try_to_string(env)?);
+        with_links(|links| {
+            links.link(&path, &uri, writable != 0);
+            links.save(CONFIG_DIR.get().and_then(|d| d.as_deref()));
+        });
         Ok(())
     })
     .resolve::<jni::errors::LogErrorAndDefault>()

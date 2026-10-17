@@ -274,7 +274,7 @@ fn pt() -> bool {
 }
 
 /// `en`, or `pt_text` when the UI is in Portuguese.
-fn tr(en: &'static str, pt_text: &'static str) -> &'static str {
+pub(crate) fn tr(en: &'static str, pt_text: &'static str) -> &'static str {
     if pt() { pt_text } else { en }
 }
 
