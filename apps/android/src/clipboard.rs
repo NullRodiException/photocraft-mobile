@@ -97,6 +97,21 @@ pub fn get_image() -> Option<(u32, u32, Vec<u8>)> {
     clipboard::read_image(&path?)
 }
 
+/// A memory warning: drops the latest copy's pixels once it is on the clipboard (a paste decodes
+/// its PNG then). A copy still on its way keeps them, since only they hold it yet. Returns the
+/// bytes released.
+pub fn release_memory() -> usize {
+    let mut latest = latest();
+    match latest.as_ref() {
+        Some(copy) if copy.landed => {
+            let bytes = copy.pixels.2.len();
+            *latest = None;
+            bytes
+        }
+        _ => 0,
+    }
+}
+
 /// The worker's queue, started on the first copy.
 fn worker() -> Option<&'static mpsc::Sender<CopyJob>> {
     static SENDER: OnceLock<Option<mpsc::Sender<CopyJob>>> = OnceLock::new();

@@ -89,6 +89,7 @@ crates/shell   ModeShell: embrulha o PhotocraftApp na interface (egui).
                services.rs: serviços comuns (codecs, gravação atômica, configurações).
                share.rs: exporta a imagem para compartilhar ou salvar na galeria.
                clipboard.rs: grava as cópias e lê as imagens coladas (Android).
+               memory.rs: o que os avisos de memória do Android pedem.
                examples/snapshot.rs renderiza offscreen um PNG por modo (e popovers).
                examples/frame_bench.rs mede o custo de CPU dos frames, sem janela.
 apps/desktop   executável `photocraft-mobile` (eframe/wgpu) para desenvolver no PC.
@@ -293,6 +294,26 @@ o app liga a recuperação do PhotoCraft (`services::recovery`, a mesma do app d
   o pedido (`apps/android/src/lifecycle.rs`, `PlatformEvent::Background`);
 - na próxima abertura, o PhotoCraft devolve o que ficou lá. Salvar ou fechar o documento apaga os
   dados de recuperação dele.
+
+### Falta de memória
+
+A `MainActivity` repassa os avisos de memória do Android (`onTrimMemory`) ao Rust
+(`crates/shell/src/memory.rs`, `apps/android/src/lifecycle.rs`):
+- **em segundo plano** (`TRIM_MEMORY_BACKGROUND` e acima) e com a memória baixa em primeiro plano
+  (`RUNNING_LOW`, Android 13 ou anterior): o app apaga na hora os caches que o PhotoCraft refaz
+  quando precisa (efeitos de camada, máscaras, contornos de forma, estágios de filtros
+  inteligentes), além dos pixels da última cópia que já chegou à área de transferência. Isso
+  acontece na própria chamada, porque em segundo plano não há frames;
+- **memória criticamente baixa em primeiro plano** (`RUNNING_CRITICAL`): o mesmo, e o próximo frame
+  faz o autosave da recuperação (`PlatformEvent::LowMemory`), porque o sistema pode encerrar o app
+  em seguida;
+- `TRIM_MEMORY_UI_HIDDEN` não pede nada: sair da tela já fez o autosave, e os caches deixam a
+  imagem rápida de redesenhar na volta;
+- o histórico de desfazer e a área de transferência do PhotoCraft nunca são apagados. As texturas
+  da GPU também ficam, porque o PhotoCraft não tem API pública para liberá-las sem desligar o canvas.
+
+Para testar: `adb shell am send-trim-memory dev.photocraftmobile.app BACKGROUND` (com o app em
+segundo plano) ou `RUNNING_CRITICAL` (com o app na tela), e olhar o logcat.
 
 ### Teclado na tela
 

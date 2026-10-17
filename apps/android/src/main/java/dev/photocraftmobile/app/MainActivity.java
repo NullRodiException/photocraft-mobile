@@ -233,6 +233,21 @@ public class MainActivity extends GameActivity {
         }
     }
 
+    /**
+     * The system is short of memory. The Rust side drops the caches PhotoCraft rebuilds when it
+     * needs them, at once, since it draws no frames in the background (lifecycle.rs). The undo
+     * history stays.
+     */
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        try {
+            nativeTrimMemory(level);
+        } catch (UnsatisfiedLinkError e) {
+            // The library isn't loaded: there is nothing to drop.
+        }
+    }
+
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
@@ -951,6 +966,9 @@ public class MainActivity extends GameActivity {
 
     /** lifecycle.rs: a frame took the last {@link #nativeBackground}. */
     private static native boolean nativeBackgroundHandled();
+
+    /** lifecycle.rs: Android asked for less memory ({@link #onTrimMemory}). */
+    private static native void nativeTrimMemory(int level);
 
     /** pen.rs: {@code historical} isn't 0 for a sample from the event's history. */
     private static native void nativePenSample(int pointerId, int action, int historical, float x, float y, float pressure, float tilt,

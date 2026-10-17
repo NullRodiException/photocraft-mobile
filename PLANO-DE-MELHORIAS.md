@@ -33,7 +33,7 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 | 16 | Textos do shell só em inglês e português | P2 | M |
 | 17 | Configurações que não são salvas ✅ | P2 | P |
 | 18 | Painel de camadas pensado para toque | P2 | G |
-| 19 | Reagir à falta de memória | P2 | P |
+| 19 | Reagir à falta de memória ✅ | P2 | P |
 | 20 | Medir desempenho no aparelho | P2 | P |
 | 21 | `cargo xtask ci` e CI no GitHub ✅ | P2 | M |
 | 22 | Testes de snapshot da interface | P2 | M |
@@ -221,6 +221,11 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 
 - **Problema:** a `MainActivity` ignora `onTrimMemory`. Os limites de memória só são definidos na primeira execução.
 - **Proposta:** em `TRIM_MEMORY_UI_HIDDEN` e `TRIM_MEMORY_BACKGROUND`, avisar o Rust. O shell faz o autosave (item 1) e roda `edit.purge.videoCache` e `edit.purge.clipboard`. O histórico de desfazer nunca é apagado sem perguntar.
+- **Feito, de outro jeito.** Em segundo plano o app não desenha frames, então um pedido para "o próximo frame" só seria atendido na volta, e aí não serviria para nada. Por isso a limpeza acontece na própria chamada JNI (`nativeTrimMemory`), com as funções públicas do PhotoCraft que o Editar › Limpar memória › Tudo usa para os caches (efeitos, máscaras, contornos de forma, estágios de filtros inteligentes). Ela também solta os pixels da última cópia que já chegou à área de transferência.
+  - `edit.purge.videoCache` não faz nada no PhotoCraft, e `edit.purge.clipboard` só roda num frame e perderia a área de transferência do app. Os dois ficaram de fora.
+  - `UI_HIDDEN` não faz nada, porque o autosave já acontece no `onPause`. O autosave extra só vale para `RUNNING_CRITICAL` com o app na tela (`PlatformEvent::LowMemory`).
+  - As texturas da GPU, que dividem a RAM no tablet, não têm API pública para serem liberadas (ver "Depende do PhotoCraft").
+  - Verificado no emulador com `am send-trim-memory`: `RUNNING_CRITICAL` liberou 7,9 MB e fez o autosave no frame seguinte; `BACKGROUND` com o app em segundo plano liberou 7,9 MB na hora, sem frame; `HIDDEN` não fez nada.
 
 ### 20. Medir desempenho no aparelho
 
@@ -292,3 +297,4 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 - A densidade dos menus e diálogos para toque (já citada no README).
 - O traço provisório para a predição de movimento (item 9).
 - `native_menu::state_hash` público, para o shell não precisar copiar a lista de estados em `menu_state` (`studio.rs`).
+- Liberar as texturas da GPU do canvas sob pressão de memória sem desligá-lo (`GpuCanvas::release` é só para falhas), para o item 19.

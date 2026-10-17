@@ -16,6 +16,7 @@ photocraft-doc = { workspace = true }
 photocraft-io = { workspace = true }
 photocraft-format = { workspace = true }
 photocraft-codecs = { workspace = true }
+photocraft-compose = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 serde = { workspace = true }

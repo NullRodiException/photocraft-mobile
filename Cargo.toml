@@ -22,6 +22,7 @@ photocraft-doc = { path = "../photocraft/crates/doc" }
 photocraft-io = { path = "../photocraft/crates/io" }
 photocraft-format = { path = "../photocraft/crates/format" }
 photocraft-codecs = { path = "../photocraft/crates/codecs" }
+photocraft-compose = { path = "../photocraft/crates/compose" }
 
 # external (the same versions PhotoCraft pins)
 eframe = { version = "0.36", default-features = false }

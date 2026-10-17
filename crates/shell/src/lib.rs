@@ -40,6 +40,7 @@ pub use touch::ToolKind;
 pub mod clipboard;
 pub mod crash;
 pub mod ime;
+pub mod memory;
 pub mod pen;
 pub mod saf;
 pub mod scrub;
@@ -68,6 +69,9 @@ pub enum PlatformEvent {
     /// The app went to the background, where the system may end it to free memory: autosave
     /// every document with unsaved changes now, for crash recovery.
     Background,
+    /// The app is in front and the system is critically short of memory, so it may end the app
+    /// next: autosave as for [`Self::Background`] (see [`memory`]).
+    LowMemory,
 }
 
 /// Every PhotoCraft tool, by the name `Tool::from_name` and `edit.toolbar` read.
@@ -283,9 +287,10 @@ impl ModeShell {
         let Some(poll) = self.platform_events.as_mut() else { return };
         for event in poll() {
             match event {
-                PlatformEvent::Background => {
+                PlatformEvent::Background | PlatformEvent::LowMemory => {
                     let dirty = self.app.session.documents().iter().filter(|d| d.is_dirty()).count();
-                    log::info!("in the background: autosaving {dirty} document(s) with unsaved changes");
+                    let why = if event == PlatformEvent::Background { "in the background" } else { "short of memory" };
+                    log::info!("{why}: autosaving {dirty} document(s) with unsaved changes");
                     // PhotoCraft's autosave runs in this frame's `logic`, on a background thread.
                     photocraft_ui_egui::prefs_ui::autosave_now(&mut self.app);
                 }
