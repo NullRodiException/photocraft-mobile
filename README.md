@@ -88,6 +88,7 @@ crates/shell   ModeShell: embrulha o PhotocraftApp na interface (egui).
                touch.rs: gestos de dedo no canvas (pan, pinça, desfazer/refazer).
                services.rs: serviços comuns (codecs, gravação atômica, configurações).
                share.rs: exporta a imagem para compartilhar ou salvar na galeria.
+               clipboard.rs: grava as cópias e lê as imagens coladas (Android).
                examples/snapshot.rs renderiza offscreen um PNG por modo (e popovers).
                examples/frame_bench.rs mede o custo de CPU dos frames, sem janela.
 apps/desktop   executável `photocraft-mobile` (eframe/wgpu) para desenvolver no PC.
@@ -345,6 +346,29 @@ Access Framework, `apps/android/src/files.rs` + `MainActivity.java`):
   abertura do app.
 - A limpeza do cache ao abrir o app não toca nas pastas criadas nesta execução, porque um
   documento compartilhado pode estar sendo copiado para uma delas.
+
+### Área de transferência e links
+
+- **Copiar:** com a preferência "Exportar área de transferência" do PhotoCraft (ligada por padrão),
+  Copiar e Recortar põem a imagem na área de transferência do Android. Uma thread grava o PNG em
+  `cache/clipboard/copy-<n>.png` e a `MainActivity` o põe lá como URI de conteúdo
+  (`FileProvider`), que outros apps colam. Só a cópia mais recente fica no cache. Enquanto o PNG é
+  gravado, colar no app usa os pixels da memória, e a última cópia continua na memória enquanto
+  estiver na área de transferência, então colar no próprio app não decodifica nada.
+- **Colar:** uma captura de tela ou uma imagem copiada em outro app (por exemplo, Copiar imagem no
+  Chrome) cola com Editar › Colar ou vira documento com Arquivo › Novo a partir da área de
+  transferência, e Novo oferece o tamanho dela (predefinição Área de transferência).
+  A `MainActivity` copia a imagem para `cache/clipboard/paste.<ext>`, e os codecs do PhotoCraft a
+  decodificam, como no desktop. O Android avisa "PhotoCraft Mobile colou da área de transferência"
+  quando a imagem vem de outro app. A área de transferência só é lida quando se cola ou se abre
+  Novo, nunca em segundo plano.
+- Essas chamadas vão direto do Rust ao Java pelo JNI (`apps/android/src/clipboard.rs`), porque
+  colar precisa da resposta na hora, e não pela fila de pedidos.
+- **Links** (Ajuda, Discord e os links da tela inicial) abrem no navegador por um
+  `Intent.ACTION_VIEW`. O eframe não abre links no Android.
+- **No emulador**, desligue Extended controls › Settings › Clipboard sharing antes de testar:
+  a sincronização com o PC troca a imagem copiada pelo texto da área de transferência do PC
+  logo em seguida.
 
 ### Dedos: navegam, não pintam
 

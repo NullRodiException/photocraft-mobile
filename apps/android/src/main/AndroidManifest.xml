@@ -44,7 +44,8 @@
                 <data android:mimeType="application/psd" />
             </intent-filter>
         </activity>
-        <!-- Images exported for the share sheet (res/xml/file_paths.xml). -->
+        <!-- Images exported for the share sheet, and images copied to the clipboard
+             (res/xml/file_paths.xml). -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.files"

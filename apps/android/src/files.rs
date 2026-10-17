@@ -24,11 +24,12 @@
 //! Other apps: "Open with" and "Share" reach `MainActivity`, which copies the documents into the
 //! cache the same way and hands the paths over (`nativeOpenFiles`); PhotoCraft opens them as OS
 //! requests ([`os_events`]). The other way, the shell's exported images ([`share_image`]) go to
-//! the share sheet or the gallery.
+//! the share sheet or the gallery, and links open in the browser ([`open_url`]).
 //!
 //! Requests travel as tab-separated lines (`open\t<id>\t<multiple>`, `save\t<id>\t<name>`,
 //! `export\t<path>\t<uri>`, `restore\t<path>\t<uri>`, `release\t<uri>`, `share\t<path>`,
-//! `image\t<send|gallery>\t<path>`), so the JNI calls carry only strings and numbers.
+//! `image\t<send|gallery>\t<path>`, `url\t<url>`), so the JNI calls carry only strings and
+//! numbers.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -128,13 +129,20 @@ pub fn share_image(target: ShareTarget, path: &Path) {
     push(format!("image\t{target}\t{}", clean(&path.to_string_lossy())));
 }
 
+/// PhotoCraft's `open_url` service (Help, the start screen's links): `MainActivity` opens the link
+/// in the browser, which eframe can't do on Android.
+pub fn open_url(url: &str) -> Result<(), String> {
+    push(format!("url\t{}", clean(url)));
+    Ok(())
+}
+
 /// `MainActivity` puts the app's cache folder here before the library starts.
 const CACHE_ENV: &str = "PHOTOCRAFT_MOBILE_CACHE";
 /// The cache folder for images exported to share (`res/xml/file_paths.xml` names it too).
 const SHARE_DIR: &str = "share";
 
 /// The app's cache folder, when `MainActivity` said where it is.
-fn cache_dir() -> Option<PathBuf> {
+pub fn cache_dir() -> Option<PathBuf> {
     std::env::var_os(CACHE_ENV).filter(|c| !c.is_empty()).map(PathBuf::from)
 }
 

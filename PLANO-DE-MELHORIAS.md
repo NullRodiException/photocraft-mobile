@@ -27,7 +27,7 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 | 10 | Cache de arquivos que só cresce ✅ | P1 | P |
 | 11 | Arquivos recentes que sobrevivem ao cache ✅ | P1 | M |
 | 12 | Abrir com, Compartilhar e Salvar na Galeria ✅ | P1 | M |
-| 13 | Área de transferência de imagens e links | P2 | M |
+| 13 | Área de transferência de imagens e links ✅ | P2 | M |
 | 14 | Layout para celular em retrato | P2 | M |
 | 15 | Barra lateral à direita | P2 | P |
 | 16 | Textos do shell só em inglês e português | P2 | M |
@@ -171,6 +171,11 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 - **Proposta:**
   - Clipboard: usar `ClipboardManager` com uma URI de conteúdo (`FileProvider`), passando pela mesma fila de pedidos do `files.rs`.
   - Links: se não abrirem, implementar `open_url` com um `Intent.ACTION_VIEW`.
+- **Feito, com duas diferenças:**
+  - O clipboard não passa pela fila de pedidos. Colar precisa da resposta na hora, então o Rust chama métodos estáticos da `MainActivity` direto pelo JNI. A imagem também não atravessa como pixels: a `MainActivity` entrega um arquivo (a cópia do próprio app, ou a imagem do outro app copiada para o cache), e os codecs do PhotoCraft o decodificam, como no desktop.
+  - Os links não abriam (não há o crate `webbrowser` na árvore, então `ctx.open_url` não faz nada no Android). Agora vão pela fila como `url`.
+- **Verificado no emulador:** links abrem no Chrome; uma cópia aparece na prévia do sistema e volta depois de reabrir o app; "Copiar imagem" do Chrome cola no app. A sincronização do emulador com a área de transferência do PC precisa estar desligada (ver o README).
+- **Verificado no Tab S9 FE:** a cópia entra no histórico da área de transferência do One UI, colar no próprio app funciona, uma imagem copiada no app Google cola no app, e os links abrem no Samsung Internet.
 
 ---
 

@@ -3,6 +3,7 @@ package dev.photocraftmobile.app;
 import android.app.ActivityManager;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
@@ -26,6 +27,7 @@ import android.view.View;
 import android.webkit.MimeTypeMap;
 import android.widget.Toast;
 
+import androidx.annotation.Keep;
 import androidx.core.content.FileProvider;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -70,6 +72,10 @@ import java.util.concurrent.Executors;
  *       an opened document writes it back.
  *   <li><b>Other apps.</b> "Open with" and "Share" from another app open the documents the same
  *       way, and the Rust side's exported images go to the share sheet or the photo gallery.
+ *       Links from the app open in the browser.
+ *   <li><b>The clipboard.</b> Images copied in the app go on the clipboard as files other apps
+ *       paste, and images copied in other apps paste in the app. The Rust side calls these
+ *       directly, from its own threads.
  * </ul>
  */
 public class MainActivity extends GameActivity {
@@ -90,6 +96,13 @@ public class MainActivity extends GameActivity {
     private static final int SHARE_MAX_BYTES = 64 * 1024;
     /** The gallery folder images are saved to (under Pictures). */
     private static final String GALLERY_FOLDER = "PhotoCraft Mobile";
+    /** The cache folder copies and pastes go through (res/xml/file_paths.xml names it too). */
+    private static final String CLIPBOARD_DIR = "clipboard";
+    /** The name an image copied in another app is pasted from (with its type's extension). */
+    private static final String PASTE_NAME = "paste";
+
+    /** The application, for the clipboard calls the Rust side makes from its own threads. */
+    private static volatile Context appContext;
 
     private final PalmFilter palm = new PalmFilter();
 
@@ -113,7 +126,13 @@ public class MainActivity extends GameActivity {
         tellRam();
         tellCacheDir();
         tellVersion();
+        appContext = getApplicationContext();
         super.onCreate(savedInstanceState);
+        try {
+            nativeClipboardInit();
+        } catch (UnsatisfiedLinkError e) {
+            // The library isn't loaded: nothing will copy or paste.
+        }
         hideSystemBars();
         // A recreated activity already took its intent.
         if (savedInstanceState == null) {
@@ -409,6 +428,9 @@ public class MainActivity extends GameActivity {
                             sendImage(new File(f[2]));
                         }
                         break;
+                    case "url":
+                        openUrl(f[1]);
+                        break;
                     default:
                         break;
                 }
@@ -664,6 +686,17 @@ public class MainActivity extends GameActivity {
         });
     }
 
+    /** A link from the app (Help, the start screen) in the browser, or the app that handles it. */
+    private void openUrl(String url) {
+        Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+        view.addCategory(Intent.CATEGORY_BROWSABLE);
+        try {
+            startActivity(view);
+        } catch (ActivityNotFoundException e) {
+            toast(text("No app can open ", "Nenhum app abre ") + url);
+        }
+    }
+
     /** A short message, from any thread. */
     private void toast(String message) {
         runOnUiThread(() -> Toast.makeText(this, message, Toast.LENGTH_SHORT).show());
@@ -760,12 +793,16 @@ public class MainActivity extends GameActivity {
     }
 
     private boolean copy(Uri uri, File target) {
+        return copy(getContentResolver(), uri, target);
+    }
+
+    private static boolean copy(ContentResolver resolver, Uri uri, File target) {
         File dir = target.getParentFile();
         if (dir != null) {
             //noinspection ResultOfMethodCallIgnored
             dir.mkdirs();
         }
-        try (InputStream in = getContentResolver().openInputStream(uri); OutputStream out = new FileOutputStream(target)) {
+        try (InputStream in = resolver.openInputStream(uri); OutputStream out = new FileOutputStream(target)) {
             return in != null && pipe(in, out);
         } catch (IOException | SecurityException e) {
             return false;
@@ -813,6 +850,88 @@ public class MainActivity extends GameActivity {
         return "pt".equals(Locale.getDefault().getLanguage()) ? pt : en;
     }
 
+    // ---- Clipboard (clipboard.rs) -----------------------------------------------------------
+
+    /**
+     * Puts the PNG at {@code path} (an image copied in the app, which the Rust side wrote into the
+     * clipboard folder) on the clipboard, as a content URI other apps paste from. Called on the
+     * Rust side's worker thread.
+     */
+    @Keep
+    private static boolean setClipboardFile(String path) {
+        Context context = appContext;
+        if (context == null) {
+            return false;
+        }
+        try {
+            ClipboardManager clipboard = context.getSystemService(ClipboardManager.class);
+            if (clipboard == null) {
+                return false;
+            }
+            Uri uri = FileProvider.getUriForFile(context, context.getPackageName() + ".files", new File(path));
+            clipboard.setPrimaryClip(ClipData.newUri(context.getContentResolver(), "PhotoCraft Mobile", uri));
+            return true;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
+     * For a paste: a file holding the clipboard's image, or null when it holds none. That is the
+     * app's own copy itself, or the image another app put there, copied into the clipboard folder.
+     * Called on the Rust side's thread.
+     */
+    @Keep
+    private static String clipboardFile() {
+        Context context = appContext;
+        if (context == null) {
+            return null;
+        }
+        try {
+            ClipboardManager clipboard = context.getSystemService(ClipboardManager.class);
+            ClipData clip = clipboard != null ? clipboard.getPrimaryClip() : null;
+            if (clip == null) {
+                return null;
+            }
+            ContentResolver resolver = context.getContentResolver();
+            File dir = new File(context.getCacheDir(), CLIPBOARD_DIR);
+            for (int i = 0; i < clip.getItemCount(); i++) {
+                Uri uri = clip.getItemAt(i).getUri();
+                if (uri == null) {
+                    continue;
+                }
+                List<String> segments = uri.getPathSegments();
+                if ((context.getPackageName() + ".files").equals(uri.getAuthority()) && segments.size() == 2
+                        && CLIPBOARD_DIR.equals(segments.get(0))) {
+                    File own = new File(dir, segments.get(1));
+                    if (own.isFile()) {
+                        return own.getAbsolutePath();
+                    }
+                    continue;
+                }
+                String type = resolver.getType(uri);
+                if (type == null || !type.startsWith("image/")) {
+                    continue;
+                }
+                File[] earlier = dir.listFiles((d, name) -> name.startsWith(PASTE_NAME));
+                if (earlier != null) {
+                    for (File f : earlier) {
+                        //noinspection ResultOfMethodCallIgnored
+                        f.delete();
+                    }
+                }
+                String ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(type);
+                File target = new File(dir, ext != null ? PASTE_NAME + "." + ext : PASTE_NAME);
+                if (copy(resolver, uri, target)) {
+                    return target.getAbsolutePath();
+                }
+            }
+        } catch (RuntimeException e) {
+            // Not allowed to read the clipboard (the app isn't in front), or the image is gone.
+        }
+        return null;
+    }
+
     // ---- Rust (apps/android/src) ----------------------------------------------------------
 
     /** touch_tools.rs */
@@ -823,6 +942,9 @@ public class MainActivity extends GameActivity {
 
     /** ime.rs: the keyboard's action key. */
     private static native void nativeImeAction();
+
+    /** clipboard.rs: lets the Rust side call {@link #clipboardFile} and {@link #setClipboardFile}. */
+    private static native void nativeClipboardInit();
 
     /** lifecycle.rs: the app is going to the background. */
     private static native void nativeBackground();

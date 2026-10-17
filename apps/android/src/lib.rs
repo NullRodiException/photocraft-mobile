@@ -19,12 +19,17 @@
 //! Other apps can send documents ("Open with", "Share"), and the image can go to their share sheet
 //! or the gallery.
 //!
+//! The clipboard: images copied in the app paste in other apps, and the other way round
+//! (`clipboard`). Links open in the browser.
+//!
 //! The on-screen keyboard: its text reaches egui through `ime`, since winit 0.30 drops
 //! GameActivity's text input events.
 //!
 //! On any other target this crate is empty, so the workspace still builds everywhere.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+#[cfg(target_os = "android")]
+mod clipboard;
 #[cfg(target_os = "android")]
 mod files;
 #[cfg(target_os = "android")]
@@ -47,7 +52,7 @@ mod android {
     use winit::platform::android::activity::input::Axis;
 
     /// The platform services: the shared ones, the system file picker, saves that go on to the
-    /// document the picker chose, and documents other apps send.
+    /// document the picker chose, documents other apps send, the clipboard and links.
     fn android_services(config_dir: Option<std::path::PathBuf>) -> Services {
         Services {
             file_dialog: Some(Box::new(crate::files::file_dialog)),
@@ -62,6 +67,9 @@ mod android {
                 }
                 Ok(())
             })),
+            clipboard_set_image: Some(Box::new(crate::clipboard::set_image)),
+            clipboard_get_image: Some(Box::new(crate::clipboard::get_image)),
+            open_url: Some(Box::new(crate::files::open_url)),
             ..services::base(config_dir)
         }
     }

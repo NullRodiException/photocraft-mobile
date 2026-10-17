@@ -37,6 +37,7 @@ pub use services::{ColorSelector, ShellSettings};
 pub use studio::{BAR_HEIGHT, COMPACT_BELOW, Popover, SidePanel};
 pub use touch::ToolKind;
 
+pub mod clipboard;
 pub mod crash;
 pub mod ime;
 pub mod pen;

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The app cache folders other apps may read through the FileProvider: images exported for the
-     share sheet (Actions › Quick › Share image…). -->
+     share sheet (Actions › Quick › Share image…), and images copied to the clipboard. -->
 <paths>
     <cache-path name="share" path="share/" />
+    <cache-path name="clipboard" path="clipboard/" />
 </paths>
