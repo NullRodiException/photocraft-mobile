@@ -73,6 +73,8 @@ public class MainActivity extends GameActivity {
     private static final int REQUEST_SAVE = 7102;
     /** The device's RAM in MB, for PhotoCraft's GPU memory budgets (see {@link #tellRam}). */
     private static final String RAM_ENV = "PHOTOCRAFT_RAM_MB";
+    /** The app's cache folder, for the Rust side's clean-up (see {@link #tellCacheDir}). */
+    private static final String CACHE_ENV = "PHOTOCRAFT_MOBILE_CACHE";
 
     /** The pen is touching or hovering. */
     private boolean penInRange;
@@ -99,6 +101,7 @@ public class MainActivity extends GameActivity {
     protected void onCreate(Bundle savedInstanceState) {
         // Before super.onCreate, which loads the Rust library and starts it.
         tellRam();
+        tellCacheDir();
         super.onCreate(savedInstanceState);
         hideSystemBars();
     }
@@ -128,6 +131,19 @@ public class MainActivity extends GameActivity {
             Os.setenv(RAM_ENV, Long.toString(mb), false);
         } catch (ErrnoException e) {
             // PhotoCraft keeps its own assumption.
+        }
+    }
+
+    /**
+     * The Rust side cleans up the picked documents' copies in the app cache at start-up
+     * (files.rs). android-activity only gives it the files and OBB folders, so the cache folder
+     * is passed here.
+     */
+    private void tellCacheDir() {
+        try {
+            Os.setenv(CACHE_ENV, getCacheDir().getAbsolutePath(), true);
+        } catch (ErrnoException e) {
+            // The copies stay; nothing else depends on it.
         }
     }
 
@@ -294,6 +310,9 @@ public class MainActivity extends GameActivity {
                     case "export":
                         export(f[1], f[2]);
                         break;
+                    case "release":
+                        release(f[1]);
+                        break;
                     default:
                         break;
                 }
@@ -405,6 +424,19 @@ public class MainActivity extends GameActivity {
             // Only for this session.
         }
         return (modes & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0;
+    }
+
+    /** Gives back the kept permission to a document no cache copy stands for any more. */
+    private void release(String uriText) {
+        Uri uri = Uri.parse(uriText);
+        for (int modes : new int[] {GRANT_READ_WRITE, Intent.FLAG_GRANT_READ_URI_PERMISSION}) {
+            try {
+                getContentResolver().releasePersistableUriPermission(uri, modes);
+                return;
+            } catch (SecurityException e) {
+                // Not held with these modes: try reading only.
+            }
+        }
     }
 
     /** Whether the document's provider accepts writes to it (true when it doesn't say). */

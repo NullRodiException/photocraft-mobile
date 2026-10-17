@@ -269,6 +269,10 @@ Access Framework, `apps/android/src/files.rs` + `MainActivity.java`):
   (`takePersistableUriPermission`), então isso continua valendo depois de o Android reiniciar o app.
 - Um arquivo que o app só pode ler, ou uma cópia que perdeu o vínculo, recusa o Salvar com uma
   mensagem pedindo Salvar Como. Antes, a gravação ia só para a cópia no cache e parecia salva.
+- **Limpeza do cache:** ao abrir o app, as pastas `cache/saf-open/<id>` e `cache/saf-save/<id>`
+  que nenhum arquivo recente nem a recuperação usam são apagadas, junto com os vínculos delas. A
+  `MainActivity` devolve as permissões de URI que mais nenhum vínculo usa. Por isso uma cópia
+  continua no cache enquanto o arquivo estiver nos recentes do PhotoCraft.
 - Pedidos e respostas trafegam como linhas de texto pelo JNI (a `MainActivity` consulta os pedidos
   a cada 150 ms), sem nenhum bloco `unsafe`.
 - Escolher pasta ainda não é suportado.

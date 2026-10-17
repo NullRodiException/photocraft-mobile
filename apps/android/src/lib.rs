@@ -110,6 +110,11 @@ mod android {
                 PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
                 let mut app = PhotocraftApp::new(Session::new(), android_services(config_dir.clone()));
                 app.background_jobs = true;
+                // The saved preferences (with the recent files) are loaded: drop the cache copies
+                // that neither a recent file nor crash recovery will open again.
+                let mut keep = app.session.prefs().file_handling.recent_files.clone();
+                keep.extend(services::recovery_paths(config_dir.as_deref()));
+                crate::files::clean_cache(&keep);
                 if let Some(rs) = cc.wgpu_render_state.as_ref() {
                     app.set_wgpu(rs.clone());
                 }

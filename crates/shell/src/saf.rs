@@ -10,7 +10,7 @@
 //! This is plain bookkeeping, with no Android API, so it is tested on any platform. The Android app
 //! (`apps/android/src/files.rs`) calls it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -118,12 +118,39 @@ impl Links {
             None => Ok(WriteTarget::File),
         }
     }
+
+    /// Forgets the links of the files under `dir` (a cache folder that is being deleted). Returns
+    /// the URIs that no remaining link uses, so the app can give their permission back.
+    pub fn forget_under(&mut self, dir: &Path) -> Vec<String> {
+        let (gone, kept): (Vec<Link>, Vec<Link>) = std::mem::take(&mut self.links).into_iter().partition(|l| Path::new(&l.path).starts_with(dir));
+        self.links = kept;
+        let mut released: Vec<String> = gone.into_iter().map(|l| l.uri).filter(|u| !self.links.iter().any(|l| &l.uri == u)).collect();
+        released.sort();
+        released.dedup();
+        released
+    }
+}
+
+/// The picker's cache folders (`<cache>/saf-open/<id>`, `<cache>/saf-save/<id>`) that hold none of
+/// the `keep` paths: the recent files, and what crash recovery may still reopen. Everything else in
+/// them is a copy nothing will open again.
+pub fn stale_dirs(cache: &Path, keep: &[String]) -> Vec<PathBuf> {
+    let mut stale = Vec::new();
+    for sub in [OPEN_DIR, SAVE_DIR] {
+        let Ok(entries) = std::fs::read_dir(cache.join(sub)) else { continue };
+        for dir in entries.filter_map(|e| e.ok().map(|e| e.path())) {
+            if !keep.iter().any(|k| Path::new(k).starts_with(&dir)) {
+                stale.push(dir);
+            }
+        }
+    }
+    stale.sort();
+    stale
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("photocraft-mobile-saf-{name}-{}", std::process::id()));
@@ -171,5 +198,30 @@ mod tests {
         assert!(Links::load(None).is_empty());
         links.save(None); // logs, doesn't panic
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn forgetting_a_folder_releases_the_uris_nothing_else_uses() {
+        let mut links = Links::default();
+        links.link("/c/saf-open/1/a.psd", "content://a", true);
+        links.link("/c/saf-open/1/b.psd", "content://b", true);
+        links.link("/c/saf-save/2/b.psd", "content://b", true);
+        let released = links.forget_under(Path::new("/c/saf-open/1"));
+        assert_eq!(released, ["content://a"], "content://b still has a link");
+        assert_eq!(links.len(), 1);
+        assert!(links.get("/c/saf-save/2/b.psd").is_some());
+    }
+
+    #[test]
+    fn stale_folders_are_the_ones_nothing_keeps() {
+        let cache = temp_dir("cache");
+        for d in ["saf-open/1", "saf-open/2", "saf-save/3", "other/4"] {
+            std::fs::create_dir_all(cache.join(d)).unwrap();
+        }
+        let kept = cache.join("saf-open/2/photo.psd").to_string_lossy().into_owned();
+        let stale = stale_dirs(&cache, &[kept]);
+        assert_eq!(stale, [cache.join("saf-open").join("1"), cache.join("saf-save").join("3")]);
+        assert!(stale_dirs(&cache.join("missing"), &[]).is_empty());
+        let _ = std::fs::remove_dir_all(&cache);
     }
 }

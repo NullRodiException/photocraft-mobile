@@ -18,8 +18,10 @@
 //! again still reaches the document after Android restarted the app. `MainActivity` keeps the URI
 //! permissions across restarts too.
 //!
+//! At start-up, [`clean_cache`] deletes the cache copies that nothing will open again.
+//!
 //! Requests travel as tab-separated lines (`open\t<id>\t<multiple>`, `save\t<id>\t<name>`,
-//! `export\t<path>\t<uri>`), so the JNI calls carry only strings and numbers.
+//! `export\t<path>\t<uri>`, `release\t<uri>`), so the JNI calls carry only strings and numbers.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -72,6 +74,40 @@ pub fn write_target(path: &str) -> Result<Option<String>, String> {
 /// After PhotoCraft wrote `path`: copy it to its picked document at `uri`.
 pub fn export(path: &str, uri: &str) {
     push(format!("export\t{}\t{}", clean(path), clean(uri)));
+}
+
+/// `MainActivity` puts the app's cache folder here before the library starts.
+const CACHE_ENV: &str = "PHOTOCRAFT_MOBILE_CACHE";
+
+/// Deletes the picked documents' cache copies that nothing will open again: every folder under
+/// `saf-open/` and `saf-save/` that holds none of `keep` (the recent files, and the documents crash
+/// recovery may reopen). Their links go too, and `MainActivity` gives back the URI permissions no
+/// other link uses.
+pub fn clean_cache(keep: &[String]) {
+    let Some(cache) = std::env::var_os(CACHE_ENV).filter(|c| !c.is_empty()).map(PathBuf::from) else {
+        log::warn!("{CACHE_ENV} isn't set: the picked documents' cache copies stay");
+        return;
+    };
+    let stale = photocraft_mobile_shell::saf::stale_dirs(&cache, keep);
+    if stale.is_empty() {
+        return;
+    }
+    let mut removed = 0;
+    for dir in &stale {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => removed += 1,
+            Err(e) => log::warn!("couldn't delete {}: {e}", dir.display()),
+        }
+    }
+    let released = with_links(|links| {
+        let released: Vec<String> = stale.iter().flat_map(|dir| links.forget_under(dir)).collect();
+        links.save(CONFIG_DIR.get().and_then(|d| d.as_deref()));
+        released
+    });
+    for uri in &released {
+        push(format!("release\t{}", clean(uri)));
+    }
+    log::info!("cache: deleted {removed} picked-document folder(s) nothing opens again, released {} URI permission(s)", released.len());
 }
 
 fn push(line: String) {

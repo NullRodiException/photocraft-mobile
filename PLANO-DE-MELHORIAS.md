@@ -24,7 +24,7 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 | 7 | Rejeição de palma e desfazer acidental | P1 | M |
 | 8 | Gestos que faltam (girar, encaixar, tela cheia, conta-gotas) | P1 | M |
 | 9 | Latência do traço | P1 | M–G |
-| 10 | Cache de arquivos que só cresce | P1 | P |
+| 10 | Cache de arquivos que só cresce ✅ | P1 | P |
 | 11 | Arquivos recentes que sobrevivem ao cache | P1 | M |
 | 12 | Abrir com, Compartilhar e Salvar na Galeria | P1 | M |
 | 13 | Área de transferência de imagens e links | P2 | M |
