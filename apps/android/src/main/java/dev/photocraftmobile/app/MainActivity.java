@@ -252,6 +252,11 @@ public class MainActivity extends GameActivity {
         boolean canceled = (event.getFlags() & MotionEvent.FLAG_CANCELED) != 0;
         PalmFilter.Decision decision =
                 palm.onEvent(event.getActionMasked(), event.getActionIndex(), ids, tools, majorsMm, event.getEventTime(), canceled);
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN && PalmFilter.isPen(tools[event.getActionIndex()]) && mSurfaceView != null) {
+            // The pen's samples arrive as they happen, not batched until the next frame: the stroke
+            // follows the pen sooner (each sample still reaches the app, see pen.rs).
+            mSurfaceView.requestUnbufferedDispatch(event);
+        }
         // Every pen on the screen, whatever contact the event is about.
         reportPen(event, tools);
         if (decision.cancel.length > 0) {

@@ -114,6 +114,9 @@ mod android {
         // for. egui's default caps textures at 8192 px, which sends any larger image (a 200 MP
         // photo, a panorama) to the much slower CPU compositor.
         photocraft_ui_egui::gpu_canvas::use_adapter_limits(&mut options.wgpu_options.wgpu_setup);
+        // One frame queued, not egui-wgpu's default two: the stroke follows the pen a frame sooner
+        // (a drawing app's trade of a little throughput for latency).
+        options.wgpu_options.surface = eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY;
         let result = eframe::run_native(
             "PhotoCraft Mobile",
             options,

@@ -23,7 +23,7 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 | 6 | Caneta com outro dedo já na tela ✅ | P1 | P |
 | 7 | Rejeição de palma e desfazer acidental ✅ | P1 | M |
 | 8 | Gestos que faltam (girar, encaixar, tela cheia, conta-gotas) ✅ | P1 | M |
-| 9 | Latência do traço | P1 | M–G |
+| 9 | Latência do traço ✅ (passos 1 e 2; o 3 depende do PhotoCraft) | P1 | M–G |
 | 10 | Cache de arquivos que só cresce ✅ | P1 | P |
 | 11 | Arquivos recentes que sobrevivem ao cache | P1 | M |
 | 12 | Abrir com, Compartilhar e Salvar na Galeria | P1 | M |
@@ -134,9 +134,9 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 
 - **Problema:** nada mede a latência entre a ponta da caneta e o traço. O `frame_bench` mede só CPU.
 - **Proposta,** do mais barato ao mais caro:
-  1. Chamar `View.requestUnbufferedDispatch` no DOWN da caneta, para as amostras chegarem assim que existem, sem esperar o quadro. Isso gera mais eventos, então o custo de CPU deve ser medido junto.
-  2. Testar `desired_maximum_frame_latency = 1` e o present mode nas `wgpu_options` do eframe (`apps/android/src/lib.rs`).
-  3. Predição de movimento (`androidx.input:input-motionprediction`). Isso exige que o PhotoCraft desenhe um trecho provisório do traço, então começa por uma issue no upstream.
+  1. Chamar `View.requestUnbufferedDispatch` no DOWN da caneta, para as amostras chegarem assim que existem, sem esperar o quadro. Isso gera mais eventos, então o custo de CPU deve ser medido junto. (Feito.)
+  2. Testar `desired_maximum_frame_latency = 1` e o present mode nas `wgpu_options` do eframe (`apps/android/src/lib.rs`). (Feito: `SurfaceConfig::LOW_LATENCY`, um quadro na fila.)
+  3. Predição de movimento (`androidx.input:input-motionprediction`). Isso exige que o PhotoCraft desenhe um trecho provisório do traço, então começa por uma issue no upstream. (Ainda não feito.)
 - **Verificar:** filmar em câmera lenta a ponta da caneta e o traço, antes e depois de cada passo.
 
 ---

@@ -221,6 +221,12 @@ crate Android usa `unsafe_code = "deny"` em vez de `forbid` e libera só esse it
     vira segmentos retos. A pressão e a inclinação de cada amostra vão pelo `StylusFeed`, que o
     PhotoCraft interpola para cada movimento. O logcat diz quantas posições voltaram em cada traço.
   - A rotação do corpo da caneta não existe na S Pen e fica em 0.
+- **Latência:** quando a caneta encosta, a `MainActivity` pede ao Android as amostras assim que
+  acontecem (`requestUnbufferedDispatch`), em vez de agrupadas até o próximo quadro. O wgpu deixa
+  um quadro na fila, e não dois (`SurfaceConfig::LOW_LATENCY`), então o traço acompanha a caneta um
+  quadro antes. Se o tablet mostrar engasgos em documentos pesados, a troca é em
+  `apps/android/src/lib.rs`. A predição de movimento depende do PhotoCraft desenhar um trecho
+  provisório do traço.
 - **Contorno do pincel ao pairar:** os eventos de hover da caneta movem o ponteiro do egui, e o
   PhotoCraft desenha o contorno do pincel antes de a caneta encostar.
 - **Rejeição de palma** (`PalmFilter.java`, decidida contato por contato): enquanto a caneta
