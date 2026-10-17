@@ -16,6 +16,9 @@ use photocraft_mobile_shell::ModeShell;
 use photocraft_ui_egui::PhotocraftApp;
 
 fn main() -> eframe::Result {
+    // A panic goes to crash.log in the settings folder; the next launch says so.
+    photocraft_mobile_shell::crash::install(services::config_dir(), env!("CARGO_PKG_VERSION").to_string());
+    let crash_report = photocraft_mobile_shell::crash::take_report(services::config_dir().as_deref());
     // The system font scan can take seconds: start it off the UI thread.
     photocraft_ui_egui::type_tool::warm_fonts();
     let files: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
@@ -39,7 +42,11 @@ fn main() -> eframe::Result {
                     log::error!("couldn't open {file}: {e}");
                 }
             }
-            Ok(Box::new(ModeShell::new(app, services::load_modes()).on_change(Box::new(services::save_modes))))
+            let mut shell = ModeShell::new(app, services::load_modes()).on_change(Box::new(services::save_modes));
+            if let Some(report) = crash_report {
+                shell = shell.with_crash_report(report, None);
+            }
+            Ok(Box::new(shell))
         }),
     )
 }

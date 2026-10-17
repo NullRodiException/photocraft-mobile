@@ -258,6 +258,18 @@ toque longo vira um clique, o deslizar vira setas ↑/↓ (que o campo do PhotoC
 soltar vira Enter. As setas só são enviadas quando o foco caiu num campo de texto, porque fora
 dele seriam atalhos (como mover a camada).
 
+### Relatório de falhas
+
+O código deste projeto não usa `panic!`, mas uma dependência pode entrar em pânico. No tablet, sem
+cabo e logcat, ninguém saberia por que o app fechou. Por isso (`crates/shell/src/crash.rs`, no
+Android e no desktop):
+- um pânico é gravado em `crash.log`, na pasta de configurações, além do log. O relatório traz a
+  mensagem, o lugar, a thread, o backtrace e a versão (no Android, o `versionName` do APK, que a
+  `MainActivity` passa em `PHOTOCRAFT_MOBILE_VERSION`);
+- na abertura seguinte, o arquivo vira `crash-last.log` e um aviso diz onde ele está;
+- no Android, Ações › Rápido › Ajuda › **Enviar relatório de falha…** abre o compartilhamento do
+  sistema com o texto do relatório.
+
 ### Recuperação após falha
 
 O Android pode encerrar um app em segundo plano a qualquer momento para liberar memória. Por isso

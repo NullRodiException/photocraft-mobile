@@ -38,7 +38,7 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 | 21 | `cargo xtask ci` e CI no GitHub ✅ | P2 | M |
 | 22 | Testes de snapshot da interface | P2 | M |
 | 23 | Ponte Java ↔ Rust testável | P2 | P |
-| 24 | Relatório de falhas | P2 | P |
+| 24 | Relatório de falhas ✅ | P2 | P |
 | 25 | Documentação desatualizada | P2 | P |
 | 26 | Assinatura de release e AAB | P3 | M |
 | 27 | Requisitos atuais da Play Store | P3 | P |

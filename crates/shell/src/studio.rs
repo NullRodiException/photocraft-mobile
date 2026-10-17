@@ -108,6 +108,8 @@ pub(crate) enum Act {
     PressureSize(bool),
     /// The active tool's brush: pressure drives its opacity.
     PressureOpacity(bool),
+    /// Send the report the last crash left.
+    SendCrashReport,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -813,6 +815,10 @@ impl ModeShell {
             }
             Act::PressureSize(on) => self.brush_pressure(Some(on), None),
             Act::PressureOpacity(on) => self.brush_pressure(None, Some(on)),
+            Act::SendCrashReport => {
+                self.studio.popover = None;
+                self.send_report();
+            }
         }
     }
 
@@ -1298,6 +1304,12 @@ impl ModeShell {
             let label = item_label(item);
             if list_row(ui, t, &label, None, item.enabled, None).clicked() {
                 acts.push(Act::Command(item.id.clone()));
+            }
+        }
+        if self.can_send_report() {
+            section(ui, t, tr("Help", "Ajuda"));
+            if list_row(ui, t, tr("Send crash report…", "Enviar relatório de falha…"), None, true, None).clicked() {
+                acts.push(Act::SendCrashReport);
             }
         }
     }

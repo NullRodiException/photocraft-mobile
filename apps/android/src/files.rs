@@ -21,7 +21,8 @@
 //! At start-up, [`clean_cache`] deletes the cache copies that nothing will open again.
 //!
 //! Requests travel as tab-separated lines (`open\t<id>\t<multiple>`, `save\t<id>\t<name>`,
-//! `export\t<path>\t<uri>`, `release\t<uri>`), so the JNI calls carry only strings and numbers.
+//! `export\t<path>\t<uri>`, `release\t<uri>`, `share\t<path>`), so the JNI calls carry only strings
+//! and numbers.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -74,6 +75,11 @@ pub fn write_target(path: &str) -> Result<Option<String>, String> {
 /// After PhotoCraft wrote `path`: copy it to its picked document at `uri`.
 pub fn export(path: &str, uri: &str) {
     push(format!("export\t{}\t{}", clean(path), clean(uri)));
+}
+
+/// Offers the text file at `path` (a crash report) to the system's share sheet.
+pub fn share(path: &std::path::Path) {
+    push(format!("share\t{}", clean(&path.to_string_lossy())));
 }
 
 /// `MainActivity` puts the app's cache folder here before the library starts.

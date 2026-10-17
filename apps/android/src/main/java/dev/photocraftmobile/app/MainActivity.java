@@ -75,6 +75,10 @@ public class MainActivity extends GameActivity {
     private static final String RAM_ENV = "PHOTOCRAFT_RAM_MB";
     /** The app's cache folder, for the Rust side's clean-up (see {@link #tellCacheDir}). */
     private static final String CACHE_ENV = "PHOTOCRAFT_MOBILE_CACHE";
+    /** The build's versionName, which crash reports name. */
+    private static final String VERSION_ENV = "PHOTOCRAFT_MOBILE_VERSION";
+    /** The most of a crash report the share sheet gets (the Rust side keeps 64 KB). */
+    private static final int SHARE_MAX_BYTES = 64 * 1024;
 
     private final PalmFilter palm = new PalmFilter();
 
@@ -97,6 +101,7 @@ public class MainActivity extends GameActivity {
         // Before super.onCreate, which loads the Rust library and starts it.
         tellRam();
         tellCacheDir();
+        tellVersion();
         super.onCreate(savedInstanceState);
         hideSystemBars();
     }
@@ -139,6 +144,18 @@ public class MainActivity extends GameActivity {
             Os.setenv(CACHE_ENV, getCacheDir().getAbsolutePath(), true);
         } catch (ErrnoException e) {
             // The copies stay; nothing else depends on it.
+        }
+    }
+
+    /** The build's versionName (0.1.n), which the Rust side writes into crash reports. */
+    private void tellVersion() {
+        try {
+            String name = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            if (name != null) {
+                Os.setenv(VERSION_ENV, name, true);
+            }
+        } catch (android.content.pm.PackageManager.NameNotFoundException | ErrnoException e) {
+            // The report names the library's version instead.
         }
     }
 
@@ -351,6 +368,9 @@ public class MainActivity extends GameActivity {
                     case "release":
                         release(f[1]);
                         break;
+                    case "share":
+                        shareText(f[1]);
+                        break;
                     default:
                         break;
                 }
@@ -462,6 +482,35 @@ public class MainActivity extends GameActivity {
             // Only for this session.
         }
         return (modes & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0;
+    }
+
+    /** Offers a text file of the app's (a crash report) to the share sheet, as text. */
+    private void shareText(String path) {
+        io.execute(() -> {
+            String text;
+            try (InputStream in = new FileInputStream(path)) {
+                byte[] bytes = new byte[SHARE_MAX_BYTES];
+                int n = 0;
+                int read;
+                while (n < bytes.length && (read = in.read(bytes, n, bytes.length - n)) > 0) {
+                    n += read;
+                }
+                text = new String(bytes, 0, n, java.nio.charset.StandardCharsets.UTF_8);
+            } catch (IOException e) {
+                return;
+            }
+            Intent send = new Intent(Intent.ACTION_SEND);
+            send.setType("text/plain");
+            send.putExtra(Intent.EXTRA_SUBJECT, text("PhotoCraft Mobile crash report", "Relatório de falha do PhotoCraft Mobile"));
+            send.putExtra(Intent.EXTRA_TEXT, text);
+            runOnUiThread(() -> {
+                try {
+                    startActivity(Intent.createChooser(send, text("Send crash report", "Enviar relatório de falha")));
+                } catch (ActivityNotFoundException e) {
+                    Toast.makeText(this, text("No app can receive it", "Nenhum app pode recebê-lo"), Toast.LENGTH_SHORT).show();
+                }
+            });
+        });
     }
 
     /** Gives back the kept permission to a document no cache copy stands for any more. */

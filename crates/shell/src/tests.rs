@@ -338,6 +338,28 @@ fn going_to_the_background_autosaves_unsaved_documents() {
 }
 
 #[test]
+fn a_crash_report_is_announced_and_sent_from_actions() {
+    let sent: Rc<RefCell<Vec<std::path::PathBuf>>> = Rc::default();
+    let sink = sent.clone();
+    let path = std::path::PathBuf::from("/data/files/crash-last.log");
+    let mut s = shell().with_crash_report(path.clone(), Some(Box::new(move |p| sink.borrow_mut().push(p.to_path_buf()))));
+    let before = s.app.ui.notices.len();
+    s.post_crash_notice();
+    assert_eq!(s.app.ui.notices.len(), before + 1);
+    let notice = s.app.ui.notices.last().unwrap();
+    assert!(notice.error && notice.lines.iter().any(|l| l.contains("crash-last.log")), "{:?}", notice.lines);
+    assert!(s.can_send_report());
+    s.apply_act(&egui::Context::default(), Act::SendCrashReport);
+    assert_eq!(*sent.borrow(), [path]);
+    // Without a crash, nothing is said or offered.
+    let mut quiet = shell();
+    let before = quiet.app.ui.notices.len();
+    quiet.post_crash_notice();
+    assert_eq!(quiet.app.ui.notices.len(), before);
+    assert!(!quiet.can_send_report());
+}
+
+#[test]
 fn without_a_document_a_finger_taps_the_start_screen() {
     use eframe::App;
     let mut s = shell().with_touch_kind(Box::new(|_| Some(ToolKind::Finger)));

@@ -90,7 +90,11 @@ mod android {
         android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info).with_tag("photocraft-mobile"));
         // App-private storage: preferences and the saved mode.
         let config_dir = app.internal_data_path();
-        log::info!("starting; settings in {config_dir:?}");
+        // MainActivity names the build (versionName); a panic is written to crash.log with it.
+        let version = std::env::var("PHOTOCRAFT_MOBILE_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string());
+        log::info!("starting {version}; settings in {config_dir:?}");
+        photocraft_mobile_shell::crash::install(config_dir.clone(), version);
+        let crash_report = photocraft_mobile_shell::crash::take_report(config_dir.as_deref());
         // MainActivity reads the device's RAM for PhotoCraft's GPU memory budgets.
         match std::env::var("PHOTOCRAFT_RAM_MB") {
             Ok(mb) => log::info!("RAM for the GPU budgets: {mb} MB"),
@@ -140,7 +144,7 @@ mod android {
                 let modes = services::load_modes(config_dir.as_deref());
                 let settings = services::load_settings(config_dir.as_deref());
                 let (modes_dir, settings_dir) = (config_dir.clone(), config_dir.clone());
-                let shell = ModeShell::new(app, modes)
+                let mut shell = ModeShell::new(app, modes)
                     .on_change(Box::new(move |m| services::save_modes(modes_dir.as_deref(), m)))
                     .with_settings(settings, Box::new(move |s| services::save_settings(settings_dir.as_deref(), s)))
                     .with_touch_kind(Box::new(crate::touch_tools::tool_of))
@@ -149,6 +153,10 @@ mod android {
                         crate::ime::input_hook(raw);
                     }))
                     .with_platform_events(Box::new(crate::lifecycle::events));
+                if let Some(report) = crash_report {
+                    log::warn!("the last run crashed: report in {}", report.display());
+                    shell = shell.with_crash_report(report, Some(Box::new(crate::files::share)));
+                }
                 Ok(Box::new(shell))
             }),
         );

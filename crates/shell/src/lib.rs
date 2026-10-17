@@ -32,6 +32,7 @@ pub use services::{ColorSelector, ShellSettings};
 pub use studio::{BAR_HEIGHT, COMPACT_BELOW, Popover, SidePanel};
 pub use touch::ToolKind;
 
+pub mod crash;
 pub mod ime;
 pub mod pen;
 pub mod saf;
@@ -51,6 +52,8 @@ pub type TouchKindFn = Box<dyn Fn(u64) -> Option<ToolKind>>;
 pub type InputHookFn = Box<dyn FnMut(&mut egui::RawInput, f32)>;
 /// What the platform asked of the app since the last frame.
 pub type PlatformEventsFn = Box<dyn FnMut() -> Vec<PlatformEvent>>;
+/// Sends a crash report file somewhere the user picks (Android's share sheet).
+pub type SendReportFn = Box<dyn FnMut(&std::path::Path)>;
 
 /// Something the platform asks of the app between frames.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -131,6 +134,9 @@ pub struct ModeShell {
     applied: bool,
     input_hook: Option<InputHookFn>,
     platform_events: Option<PlatformEventsFn>,
+    /// The report the last crash left (see [`crash`]), and how to send it.
+    crash_report: Option<std::path::PathBuf>,
+    send_report: Option<SendReportFn>,
     scrub: scrub::ValueScrub,
     /// This frame's input ended a press the user made (a tap or a lift), not one the shell did.
     tapped: bool,
@@ -161,6 +167,8 @@ impl ModeShell {
             applied: false,
             input_hook: None,
             platform_events: None,
+            crash_report: None,
+            send_report: None,
             scrub: scrub::ValueScrub::default(),
             tapped: false,
             last_focus: None,
@@ -180,6 +188,36 @@ impl ModeShell {
     pub fn with_platform_events(mut self, events: PlatformEventsFn) -> Self {
         self.platform_events = Some(events);
         self
+    }
+
+    /// The last crash left the report at `path` ([`crash::take_report`]): a notice says so at start-up,
+    /// and Actions › Quick offers to send it through `send`, where the platform can.
+    pub fn with_crash_report(mut self, path: std::path::PathBuf, send: Option<SendReportFn>) -> Self {
+        self.crash_report = Some(path);
+        self.send_report = send;
+        self
+    }
+
+    /// The report a crash left can be sent (Actions › Quick).
+    pub(crate) fn can_send_report(&self) -> bool {
+        self.crash_report.is_some() && self.send_report.is_some()
+    }
+
+    pub(crate) fn send_report(&mut self) {
+        if let (Some(path), Some(send)) = (self.crash_report.as_deref(), self.send_report.as_mut()) {
+            send(path);
+        }
+    }
+
+    /// Tells the user that the app closed with an error last time.
+    pub(crate) fn post_crash_notice(&mut self) {
+        let Some(path) = self.crash_report.as_ref() else { return };
+        let mut lines = vec![format!("{}: {}", studio::tr("The report is in", "O relatório está em"), path.display())];
+        if self.send_report.is_some() {
+            lines.push(studio::tr("To send it: Actions › Quick › Send crash report…", "Para enviar: Ações › Rápido › Enviar relatório de falha…").to_string());
+        }
+        let title = studio::tr("The app closed with an error last time", "O app fechou com um erro na última vez");
+        photocraft_ui_egui::notices::post(&mut self.app, title, lines, true, None);
     }
 
     /// Carry out the platform's requests since the last frame.
@@ -344,6 +382,7 @@ impl eframe::App for ModeShell {
         if !self.applied {
             self.applied = true;
             self.switch_logged(ctx, self.modes.mode());
+            self.post_crash_notice();
         }
     }
 
