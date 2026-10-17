@@ -9,14 +9,17 @@
 //! - hovering moves egui's pointer ([`input_hook`]), so the brush outline follows the pen before
 //!   it touches;
 //! - pen contacts lose winit's force in [`input_hook`], so pressure comes from the feed only and
-//!   each sample keeps its tilt.
+//!   each sample keeps its tilt;
+//! - the samples Android batched into one motion event (its history) come too, and their positions
+//!   go back into the frame's input ([`PenHistory`]): winit keeps only each event's last position,
+//!   so a quick curve reached PhotoCraft as a few straight segments.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use photocraft_mobile_shell::ToolKind;
-use photocraft_mobile_shell::pen::tilt_from_android;
+use photocraft_mobile_shell::pen::{PenHistory, tilt_from_android};
 use photocraft_ui_egui::stylus::{PenSample, StylusFeed};
 
 /// `MotionEvent.ACTION_*`.
@@ -48,6 +51,14 @@ enum Hover {
 
 /// Hover changes since the last frame, oldest first.
 static HOVER: Mutex<Vec<Hover>> = Mutex::new(Vec::new());
+/// The batched positions winit drops.
+static HISTORY: Mutex<Option<PenHistory>> = Mutex::new(None);
+/// Batched positions put back during the stroke in progress (logged when it ends).
+static RESTORED: AtomicUsize = AtomicUsize::new(0);
+
+fn with_history<R>(f: impl FnOnce(&mut PenHistory) -> R) -> R {
+    f(HISTORY.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(PenHistory::default))
+}
 
 /// Connect to the app's stylus input and repaint; call once the app exists.
 pub fn install(feed: StylusFeed, ctx: egui::Context) {
@@ -56,8 +67,22 @@ pub fn install(feed: StylusFeed, ctx: egui::Context) {
 }
 
 #[allow(clippy::too_many_arguments)] // one per MotionEvent field, as Java passes them
-fn sample(action: i32, x: f32, y: f32, pressure: f32, tilt: f32, orientation: f32, buttons: i32, tool: i32) {
+fn sample(pointer: i32, action: i32, historical: bool, x: f32, y: f32, pressure: f32, tilt: f32, orientation: f32, buttons: i32, tool: i32) {
     PEN_SEEN.store(true, Ordering::Relaxed);
+    if let Ok(id) = u64::try_from(pointer) {
+        match action {
+            ACTION_MOVE if historical => with_history(|h| h.historical(id, x, y)),
+            ACTION_MOVE => with_history(|h| h.current(id, x, y)),
+            ACTION_UP | ACTION_POINTER_UP | ACTION_CANCEL => {
+                with_history(|h| h.lifted(id));
+                let restored = RESTORED.swap(0, Ordering::Relaxed);
+                if restored > 0 {
+                    log::info!("pen stroke: {restored} batched position(s) put back");
+                }
+            }
+            _ => {}
+        }
+    }
     let eraser = tool == TOOL_TYPE_ERASER || buttons & BUTTON_STYLUS_PRIMARY != 0;
     let (tilt_x, tilt_y) = tilt_from_android(tilt, orientation);
     let touching = matches!(action, ACTION_DOWN | ACTION_MOVE | ACTION_POINTER_DOWN);
@@ -102,6 +127,8 @@ pub fn input_hook(raw: &mut egui::RawInput, pixels_per_point: f32) {
             }
         }
     }
+    let restored = with_history(|h| h.insert(&mut raw.events, pixels_per_point));
+    RESTORED.fetch_add(restored, Ordering::Relaxed);
     let hovers = std::mem::take(&mut *HOVER.lock().unwrap_or_else(PoisonError::into_inner));
     // A frame where something touches belongs to that contact: hover moves and the pen leaving
     // its hover just before touching must not disturb the press.
@@ -116,8 +143,10 @@ pub fn input_hook(raw: &mut egui::RawInput, pixels_per_point: f32) {
     }
 }
 
-/// `private static native void nativePenSample(int action, float x, float y, float pressure,
-/// float tilt, float orientation, int buttons, int toolType)` in `MainActivity`.
+/// `private static native void nativePenSample(int pointerId, int action, int historical, float x,
+/// float y, float pressure, float tilt, float orientation, int buttons, int toolType)` in
+/// `MainActivity`. `historical` isn't 0 for a sample from the event's history (an earlier, batched
+/// sample of the same move).
 // The unsafe part is only the unmangled export the JVM looks up by name. Plain numbers, no JNI
 // environment use, and nothing here can panic.
 #[allow(unsafe_code, clippy::too_many_arguments)]
@@ -125,7 +154,9 @@ pub fn input_hook(raw: &mut egui::RawInput, pixels_per_point: f32) {
 extern "system" fn Java_dev_photocraftmobile_app_MainActivity_nativePenSample(
     _env: *mut c_void,
     _class: *mut c_void,
+    pointer: i32,
     action: i32,
+    historical: i32,
     x: f32,
     y: f32,
     pressure: f32,
@@ -134,5 +165,5 @@ extern "system" fn Java_dev_photocraftmobile_app_MainActivity_nativePenSample(
     buttons: i32,
     tool: i32,
 ) {
-    sample(action, x, y, pressure, tilt, orientation, buttons, tool);
+    sample(pointer, action, historical != 0, x, y, pressure, tilt, orientation, buttons, tool);
 }

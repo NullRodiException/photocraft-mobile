@@ -287,18 +287,28 @@ public class MainActivity extends GameActivity {
     /**
      * Sends the pressure, tilt, orientation and buttons of every pen in the event (winit drops all
      * but pressure). A pen that isn't the contact the event is about is still touching: it moved.
+     * A move also sends the samples Android batched into the event (its history) first, oldest
+     * first: winit keeps only the event's last position (see pen.rs).
      */
     private static void reportPen(MotionEvent event, int[] tools) {
         int masked = event.getActionMasked();
         int actor = event.getActionIndex();
+        int buttons = event.getButtonState();
         for (int i = 0; i < tools.length; i++) {
             if (!PalmFilter.isPen(tools[i])) {
                 continue;
             }
             int action = i == actor || masked == MotionEvent.ACTION_CANCEL ? masked : MotionEvent.ACTION_MOVE;
+            int id = event.getPointerId(i);
             try {
-                nativePenSample(action, event.getX(i), event.getY(i), event.getPressure(i), event.getAxisValue(MotionEvent.AXIS_TILT, i),
-                        event.getOrientation(i), event.getButtonState(), tools[i]);
+                if (action == MotionEvent.ACTION_MOVE) {
+                    for (int h = 0; h < event.getHistorySize(); h++) {
+                        nativePenSample(id, action, 1, event.getHistoricalX(i, h), event.getHistoricalY(i, h), event.getHistoricalPressure(i, h),
+                                event.getHistoricalAxisValue(MotionEvent.AXIS_TILT, i, h), event.getHistoricalOrientation(i, h), buttons, tools[i]);
+                    }
+                }
+                nativePenSample(id, action, 0, event.getX(i), event.getY(i), event.getPressure(i), event.getAxisValue(MotionEvent.AXIS_TILT, i),
+                        event.getOrientation(i), buttons, tools[i]);
             } catch (UnsatisfiedLinkError e) {
                 // Not loaded yet: the pen paints with winit's pressure only.
                 return;
@@ -561,8 +571,9 @@ public class MainActivity extends GameActivity {
     /** lifecycle.rs: a frame took the last {@link #nativeBackground}. */
     private static native boolean nativeBackgroundHandled();
 
-    /** pen.rs */
-    private static native void nativePenSample(int action, float x, float y, float pressure, float tilt, float orientation, int buttons, int toolType);
+    /** pen.rs: {@code historical} isn't 0 for a sample from the event's history. */
+    private static native void nativePenSample(int pointerId, int action, int historical, float x, float y, float pressure, float tilt,
+            float orientation, int buttons, int toolType);
 
     /** files.rs: the next request line, or null. */
     private static native String nativeNextRequest();

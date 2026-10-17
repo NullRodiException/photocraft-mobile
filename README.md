@@ -214,6 +214,12 @@ crate Android usa `unsafe_code = "deny"` em vez de `forbid` e libera só esse it
     a ferramenta anterior. É o tratamento de "virar a caneta" que o PhotoCraft já tem.
   - A força que o winit põe no toque da caneta é descartada (`pen::input_hook`), para que pressão e
     inclinação venham da mesma amostra.
+  - **Amostras agrupadas:** com a caneta rápida, o Android junta várias amostras num evento (o
+    histórico dele), e o winit 0.30 usa só a última posição de cada evento. A `MainActivity` manda
+    também as amostras do histórico, e o `PenHistory` (`crates/shell/src/pen.rs`) devolve as
+    posições delas ao frame, como movimentos antes do movimento do winit. Assim uma curva rápida não
+    vira segmentos retos. A pressão e a inclinação de cada amostra vão pelo `StylusFeed`, que o
+    PhotoCraft interpola para cada movimento. O logcat diz quantas posições voltaram em cada traço.
   - A rotação do corpo da caneta não existe na S Pen e fica em 0.
 - **Contorno do pincel ao pairar:** os eventos de hover da caneta movem o ponteiro do egui, e o
   PhotoCraft desenha o contorno do pincel antes de a caneta encostar.
