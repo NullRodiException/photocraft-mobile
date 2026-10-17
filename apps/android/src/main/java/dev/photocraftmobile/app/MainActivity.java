@@ -10,6 +10,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.OpenableColumns;
 import android.system.ErrnoException;
 import android.system.Os;
@@ -64,6 +65,8 @@ public class MainActivity extends GameActivity {
     private static final long PEN_GRACE_MS = 500;
     /** How often the Rust side's file requests are checked (ms). */
     private static final long POLL_MS = 150;
+    /** How long a pause waits for the Rust side to take the autosave request (ms). */
+    private static final long BACKGROUND_WAIT_MS = 250;
     private static final int REQUEST_OPEN = 7101;
     private static final int REQUEST_SAVE = 7102;
     /** The device's RAM in MB, for PhotoCraft's GPU memory budgets (see {@link #tellRam}). */
@@ -138,7 +141,26 @@ public class MainActivity extends GameActivity {
     @Override
     protected void onPause() {
         handler.removeCallbacks(poll);
+        autosaveBeforePause();
         super.onPause();
+    }
+
+    /**
+     * Android may end the app once it is in the background, so the Rust side autosaves the
+     * documents with unsaved changes for crash recovery (the write itself goes on in the
+     * background). That happens in a frame, and once GameActivity has paused, the Rust side draws
+     * no more frames: wait, briefly, for a frame to take the request.
+     */
+    private void autosaveBeforePause() {
+        try {
+            nativeBackground();
+            long until = SystemClock.uptimeMillis() + BACKGROUND_WAIT_MS;
+            while (!nativeBackgroundHandled() && SystemClock.uptimeMillis() < until) {
+                SystemClock.sleep(5);
+            }
+        } catch (UnsatisfiedLinkError e) {
+            // The library isn't loaded: there is nothing to save.
+        }
     }
 
     @Override
@@ -435,6 +457,12 @@ public class MainActivity extends GameActivity {
 
     /** touch_tools.rs */
     private static native void nativeTouchTool(int pointerId, int toolType);
+
+    /** lifecycle.rs: the app is going to the background. */
+    private static native void nativeBackground();
+
+    /** lifecycle.rs: a frame took the last {@link #nativeBackground}. */
+    private static native boolean nativeBackgroundHandled();
 
     /** pen.rs */
     private static native void nativePenSample(int action, float x, float y, float pressure, float tilt, float orientation, int buttons, int toolType);

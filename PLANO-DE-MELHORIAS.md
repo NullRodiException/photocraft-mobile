@@ -15,7 +15,7 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 
 | # | Item | Prior. | Esforço |
 |---|---|---|---|
-| 1 | Recuperação após falha ou encerramento pelo Android | P0 | M |
+| 1 | Recuperação após falha ou encerramento pelo Android ✅ | P0 | M |
 | 2 | Salvar um arquivo aberto pelo seletor não chega ao original | P0 | M |
 | 3 | O texto do teclado na tela não chega aos campos | P0 | M |
 | 4 | Fixar a versão do PhotoCraft usada ✅ | P0 | P |

@@ -237,6 +237,19 @@ toque longo vira um clique, o deslizar vira setas ↑/↓ (que o campo do PhotoC
 soltar vira Enter. As setas só são enviadas quando o foco caiu num campo de texto, porque fora
 dele seriam atalhos (como mover a camada).
 
+### Recuperação após falha
+
+O Android pode encerrar um app em segundo plano a qualquer momento para liberar memória. Por isso
+o app liga a recuperação do PhotoCraft (`services::recovery`, a mesma do app de desktop):
+- os documentos com alterações não salvas são gravados em segundo plano em `recovery/`, dentro do
+  armazenamento interno do app (no desktop, na pasta de configurações). Na instalação nova, isso
+  acontece a cada 2 minutos (Preferências › Manipulação de arquivos; no desktop, 10);
+- ao sair da tela (`onPause`), a `MainActivity` pede um autosave na hora. Depois que a
+  `GameActivity` pausa, o winit não desenha mais frames, então ela espera até 250 ms um frame pegar
+  o pedido (`apps/android/src/lifecycle.rs`, `PlatformEvent::Background`);
+- na próxima abertura, o PhotoCraft devolve o que ficou lá. Salvar ou fechar o documento apaga os
+  dados de recuperação dele.
+
 ### Teclado na tela
 
 O teclado só abre quando você toca num campo de texto. Diálogos que focam um campo sozinhos (como

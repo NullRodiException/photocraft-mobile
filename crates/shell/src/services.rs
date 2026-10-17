@@ -1,17 +1,23 @@
-//! Platform services every front-end shares: codecs, crash-safe writes, and settings kept in one
-//! folder of PhotoCraft Mobile's own (never PhotoCraft's, since switching modes rewrites the
-//! toolbar). A front-end adds what is platform-specific, such as file dialogs.
+//! Platform services every front-end shares: codecs, crash-safe writes, crash recovery, and
+//! settings kept in one folder of PhotoCraft Mobile's own (never PhotoCraft's, since switching
+//! modes rewrites the toolbar). A front-end adds what is platform-specific, such as file dialogs.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::Arc;
 
 use photocraft_codecs::{ChannelLayout, EncodeOptions, Image};
 use photocraft_doc::Document;
+use photocraft_format::RecoveryStore;
 use photocraft_mobile_modes::Modes;
-use photocraft_ui_egui::{ExportSettings, Services};
+use photocraft_ui_egui::{ExportSettings, Recoverable, Services};
 
 const PREFS: &str = "preferences.json";
 const MODES: &str = "modes.json";
 const SHELL: &str = "shell.json";
+/// The folder (in the settings folder) that autosaves for crash recovery go to.
+pub const RECOVERY: &str = "recovery";
 
 /// The shell's own settings (PhotoCraft keeps its preferences in `preferences.json`).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -108,8 +114,63 @@ pub fn export_options(settings: &ExportSettings) -> photocraft_io::ExportOptions
     opts
 }
 
-/// Open, export, write, PNG encoding and preferences (in `config_dir`, when there is one).
+type SharedRecovery = Rc<RefCell<Option<RecoveryStore>>>;
+
+/// Runs `f` on the recovery store. Without a settings folder there is no store, and the result is
+/// `Err`. The service closures never call one another, so the store is never borrowed twice.
+fn with_store<R>(store: &SharedRecovery, f: impl FnOnce(&mut RecoveryStore) -> R) -> Result<R, String> {
+    let mut slot = store.try_borrow_mut().map_err(|_| "crash recovery is busy".to_string())?;
+    Ok(f(slot.as_mut().ok_or("no settings folder")?))
+}
+
+/// Crash recovery, as in PhotoCraft's desktop app. PhotoCraft autosaves documents with unsaved
+/// changes (Preferences › File Handling) into `<config_dir>/recovery` in the background, and at the
+/// next launch it offers back what a crash left there. This matters most on Android, which may end
+/// an app in the background at any time to free memory.
+pub fn recovery(config_dir: Option<&Path>) -> Services {
+    let dir = config_dir.map(|d| d.join(RECOVERY));
+    let recover_dir = dir.clone();
+    let store: SharedRecovery = Rc::new(RefCell::new(dir.map(RecoveryStore::new)));
+    let (s1, s2, s3) = (store.clone(), store.clone(), store.clone());
+    Services {
+        autosave: Some(Box::new(move |doc: &Arc<Document>, revision: u64, path: Option<&str>| {
+            with_store(&s1, |s| s.autosave_checked(doc, revision, path.map(str::to_string)))?
+        })),
+        autosave_results: Some(Box::new(move || with_store(&s2, |s| s.take_completed()).unwrap_or_default())),
+        discard_autosave: Some(Box::new(move |id: u64| {
+            if let Err(e) = with_store(&s3, |s| s.discard(id).map_err(|e| e.to_string())).and_then(|r| r) {
+                log::warn!("couldn't drop the recovery data of document {id}: {e}");
+            }
+        })),
+        recover: Some(Box::new(move || {
+            let Some(dir) = recover_dir.as_ref() else { return Vec::new() };
+            photocraft_format::list_recovery(dir)
+                .into_iter()
+                .map(|e| Recoverable {
+                    key: e.info.key.clone(),
+                    name: e.info.document_name.clone(),
+                    path: e.info.original_path.clone(),
+                    load: Box::new(move || photocraft_format::recover(&e).map_err(|e| e.to_string())),
+                })
+                .collect()
+        })),
+        adopt_autosave: Some(Box::new(move |id: u64, key: &str| {
+            let _ = with_store(&store, |s| s.adopt(id, key));
+        })),
+        ..Default::default()
+    }
+}
+
+/// Where the documents waiting in `<config_dir>/recovery` were last saved (the paths a cleanup
+/// must keep).
+pub fn recovery_paths(config_dir: Option<&Path>) -> Vec<String> {
+    config_dir.map(|d| photocraft_format::list_recovery(&d.join(RECOVERY)).into_iter().filter_map(|e| e.info.original_path).collect()).unwrap_or_default()
+}
+
+/// Open, export, write, PNG encoding, preferences and crash recovery (in `config_dir`, when there
+/// is one).
 pub fn base(config_dir: Option<PathBuf>) -> Services {
+    let recovery = recovery(config_dir.as_deref());
     let (load_dir, save_dir) = (config_dir.clone(), config_dir);
     Services {
         import: Some(Box::new(|name: &str, bytes: &[u8], max_svg_group_depth: usize| {
@@ -125,7 +186,7 @@ pub fn base(config_dir: Option<PathBuf>) -> Services {
         })),
         load_prefs: Some(Box::new(move || std::fs::read_to_string(load_dir.as_ref()?.join(PREFS)).ok())),
         save_prefs: Some(Box::new(move |text: &str| write_atomic(&save_dir.as_ref().ok_or("no settings folder")?.join(PREFS), text.as_bytes()))),
-        ..Default::default()
+        ..recovery
     }
 }
 
@@ -172,6 +233,36 @@ mod tests {
         std::fs::write(dir.join(PREFS), "{}").unwrap();
         assert!(has_preferences(Some(&dir)));
         assert!(!has_preferences(None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn autosaves_go_to_the_recovery_folder_and_come_back() {
+        let dir = temp_dir("recovery");
+        let mut app = photocraft_ui_egui::PhotocraftApp::new(photocraft_engine::Session::new(), base(Some(dir.clone())));
+        app.run("file.new", serde_json::json!({"width": 64, "height": 48})).unwrap();
+        let doc = app.session.active().unwrap().doc.clone();
+        let s = &mut app.services;
+        (s.autosave.as_mut().unwrap())(&doc, 3, Some("/picked/a.psd")).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut done = Vec::new();
+        while done.is_empty() && std::time::Instant::now() < deadline {
+            done = (s.autosave_results.as_mut().unwrap())();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(matches!(done.as_slice(), [(id, 3, Ok(()))] if *id == doc.id.0), "{done:?}");
+        let found = (s.recover.as_mut().unwrap())();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path.as_deref(), Some("/picked/a.psd"));
+        assert_eq!(recovery_paths(Some(&dir)), ["/picked/a.psd"]);
+        // Saved or closed: the recovery data goes.
+        (s.discard_autosave.as_mut().unwrap())(doc.id.0);
+        assert!((s.recover.as_mut().unwrap())().is_empty());
+        // No settings folder: autosaves fail (PhotoCraft shows it) and nothing comes back.
+        let mut none = recovery(None);
+        assert!((none.autosave.as_mut().unwrap())(&doc, 1, None).is_err());
+        assert!((none.recover.as_mut().unwrap())().is_empty());
+        assert!(recovery_paths(None).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

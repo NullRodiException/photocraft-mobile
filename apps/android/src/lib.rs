@@ -23,6 +23,8 @@
 #[cfg(target_os = "android")]
 mod files;
 #[cfg(target_os = "android")]
+mod lifecycle;
+#[cfg(target_os = "android")]
 mod pen;
 #[cfg(target_os = "android")]
 mod touch_tools;
@@ -63,6 +65,9 @@ mod android {
         }
         values.insert("performance.historyStates".into(), json!(30));
         values.insert("performance.effectCacheMb".into(), json!(256));
+        // Crash recovery: autosave more often than the desktop's 10 minutes, since Android may end
+        // the app in the background at any time.
+        values.insert("fileHandling.autosaveMinutes".into(), json!(2));
         json!({ "values": values })
     }
 
@@ -111,6 +116,7 @@ mod android {
                 // The dock's icon rail repeats the panel tabs: on a tablet the canvas gets that width.
                 app.ui.panels.rail = false;
                 crate::pen::install(app.stylus.feed.clone(), cc.egui_ctx.clone());
+                crate::lifecycle::install(cc.egui_ctx.clone());
                 let modes = services::load_modes(config_dir.as_deref());
                 let settings = services::load_settings(config_dir.as_deref());
                 let (modes_dir, settings_dir) = (config_dir.clone(), config_dir.clone());
@@ -118,7 +124,8 @@ mod android {
                     .on_change(Box::new(move |m| services::save_modes(modes_dir.as_deref(), m)))
                     .with_settings(settings, Box::new(move |s| services::save_settings(settings_dir.as_deref(), s)))
                     .with_touch_kind(Box::new(crate::touch_tools::tool_of))
-                    .with_input_hook(Box::new(crate::pen::input_hook));
+                    .with_input_hook(Box::new(crate::pen::input_hook))
+                    .with_platform_events(Box::new(crate::lifecycle::events));
                 Ok(Box::new(shell))
             }),
         );

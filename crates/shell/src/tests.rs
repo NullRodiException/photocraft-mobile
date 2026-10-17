@@ -309,6 +309,35 @@ fn turning_finger_navigation_off_is_saved() {
 }
 
 #[test]
+fn going_to_the_background_autosaves_unsaved_documents() {
+    let dir = std::env::temp_dir().join(format!("photocraft-mobile-background-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let background = Rc::new(std::cell::Cell::new(false));
+    let flag = background.clone();
+    let config = dir.clone();
+    let mut harness = egui_kittest::Harness::builder().build_eframe(move |_cc| {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services::base(Some(config)));
+        app.run("file.new", json!({"width": 64, "height": 48})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        ModeShell::new(app, Modes::default())
+            .with_platform_events(Box::new(move || if flag.replace(false) { vec![PlatformEvent::Background] } else { Vec::new() }))
+    });
+    let recovery = dir.join(services::RECOVERY);
+    harness.step();
+    harness.step();
+    assert!(photocraft_format::list_recovery(&recovery).is_empty(), "the autosave interval hasn't passed");
+    background.set(true);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while photocraft_format::list_recovery(&recovery).is_empty() && std::time::Instant::now() < deadline {
+        harness.step();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(photocraft_format::list_recovery(&recovery).len(), 1, "the unsaved document was autosaved");
+    drop(harness);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn without_a_document_a_finger_taps_the_start_screen() {
     use eframe::App;
     let mut s = shell().with_touch_kind(Box::new(|_| Some(ToolKind::Finger)));

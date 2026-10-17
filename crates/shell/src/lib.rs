@@ -47,6 +47,16 @@ pub type TouchKindFn = Box<dyn Fn(u64) -> Option<ToolKind>>;
 /// Platform input added before anything else sees a frame's raw input (pen hover, pen samples),
 /// with the current points-per-pixel.
 pub type InputHookFn = Box<dyn FnMut(&mut egui::RawInput, f32)>;
+/// What the platform asked of the app since the last frame.
+pub type PlatformEventsFn = Box<dyn FnMut() -> Vec<PlatformEvent>>;
+
+/// Something the platform asks of the app between frames.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlatformEvent {
+    /// The app went to the background, where the system may end it to free memory: autosave
+    /// every document with unsaved changes now, for crash recovery.
+    Background,
+}
 
 /// Every PhotoCraft tool, by the name `Tool::from_name` and `edit.toolbar` read.
 pub fn tool_names() -> Vec<String> {
@@ -118,6 +128,7 @@ pub struct ModeShell {
     /// The saved mode is applied once, after PhotoCraft's first `logic` pass.
     applied: bool,
     input_hook: Option<InputHookFn>,
+    platform_events: Option<PlatformEventsFn>,
     scrub: scrub::ValueScrub,
     /// This frame's input ended a press the user made (a tap or a lift), not one the shell did.
     tapped: bool,
@@ -147,6 +158,7 @@ impl ModeShell {
             studio: studio::Studio::default(),
             applied: false,
             input_hook: None,
+            platform_events: None,
             scrub: scrub::ValueScrub::default(),
             tapped: false,
             last_focus: None,
@@ -160,6 +172,27 @@ impl ModeShell {
     pub fn with_input_hook(mut self, hook: InputHookFn) -> Self {
         self.input_hook = Some(hook);
         self
+    }
+
+    /// Take the platform's requests ([`PlatformEvent`]) at the start of each frame.
+    pub fn with_platform_events(mut self, events: PlatformEventsFn) -> Self {
+        self.platform_events = Some(events);
+        self
+    }
+
+    /// Carry out the platform's requests since the last frame.
+    fn platform_events(&mut self) {
+        let Some(poll) = self.platform_events.as_mut() else { return };
+        for event in poll() {
+            match event {
+                PlatformEvent::Background => {
+                    let dirty = self.app.session.documents().iter().filter(|d| d.is_dirty()).count();
+                    log::info!("in the background: autosaving {dirty} document(s) with unsaved changes");
+                    // PhotoCraft's autosave runs in this frame's `logic`, on a background thread.
+                    photocraft_ui_egui::prefs_ui::autosave_now(&mut self.app);
+                }
+            }
+        }
     }
 
     /// Persist the modes through `save` after each switch.
@@ -299,6 +332,7 @@ fn shortcut_key(mode: Mode) -> Key {
 
 impl eframe::App for ModeShell {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.platform_events();
         self.shortcuts(ctx);
         self.apply_gesture(ctx);
         if let Some(wait) = self.scrub_wake.take() {
