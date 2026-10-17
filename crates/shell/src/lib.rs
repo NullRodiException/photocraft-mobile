@@ -23,9 +23,14 @@
 
 use egui::{Event, Key, Modifiers, Stroke, StrokeKind, Vec2, vec2};
 use photocraft_mobile_modes::{Mode, Modes};
+use photocraft_ui_egui::canvas::ViewXform;
 use photocraft_ui_egui::theme::Tokens;
 use photocraft_ui_egui::{PhotocraftApp, Tool};
 use serde_json::json;
+use touch::Hold;
+
+/// Two fingers that leave the view this close to a right angle (degrees) snap it there.
+pub const SNAP_DEGREES: f32 = 5.0;
 
 pub use photocraft_mobile_modes;
 pub use services::{ColorSelector, ShellSettings};
@@ -126,6 +131,19 @@ pub struct ModeShell {
     pending_pan: Vec2,
     /// A finger tap waiting for the next `logic` pass (finger count).
     pending_tap: Option<usize>,
+    /// Finger turn waiting for the next `logic` pass (degrees, clockwise), around this point.
+    pending_turn: f32,
+    turn_anchor: Option<egui::Pos2>,
+    /// A turning gesture ended: snap the rotation near a right angle.
+    pending_settle: bool,
+    /// A quick pinch: fit the image on screen.
+    pending_fit: bool,
+    /// The tool to bring back after a finger hold's eyedropper, and when (after the frame that
+    /// takes the hold's release).
+    hold_return: Option<Tool>,
+    restore_after_frame: bool,
+    /// A finger is held still: repaint after this many seconds to see the hold through.
+    gesture_wake: Option<f64>,
     /// Focus (full screen): only the image and a button to come back.
     focus: bool,
     /// The top bar, side bar and popovers.
@@ -162,6 +180,13 @@ impl ModeShell {
             router: touch::TouchRouter::default(),
             pending_pan: Vec2::ZERO,
             pending_tap: None,
+            pending_turn: 0.0,
+            turn_anchor: None,
+            pending_settle: false,
+            pending_fit: false,
+            hold_return: None,
+            restore_after_frame: false,
+            gesture_wake: None,
             focus: false,
             studio: studio::Studio::default(),
             applied: false,
@@ -331,6 +356,41 @@ impl ModeShell {
         view.center[1] -= (-d.x * s + d.y * c) / scale;
     }
 
+    /// Turn the active document's view by `degrees` (clockwise on screen) around the screen point
+    /// `anchor`, which keeps showing the same spot of the image, as two fingers turn it.
+    pub fn rotate_view(&mut self, degrees: f32, anchor: egui::Pos2) {
+        let Some(idx) = self.app.session.active_index() else { return };
+        let Some(xf) = ViewXform::active(&self.app) else { return };
+        if !(degrees.is_finite() && xf.zoom.is_finite() && xf.zoom > 0.0 && anchor.x.is_finite() && anchor.y.is_finite()) {
+            return;
+        }
+        let doc = xf.to_doc(anchor);
+        // A mirrored view turns the other way on screen.
+        let delta = if xf.flip { -degrees } else { degrees };
+        let rotation = (xf.rotation + delta + 180.0).rem_euclid(360.0) - 180.0;
+        let turned = ViewXform { rotation, ..xf };
+        let u = turned.unmap_vec((anchor - xf.rect.center()) / xf.zoom);
+        let center = [doc[0] as f32 - u.x, doc[1] as f32 - u.y];
+        if let Some(view) = self.app.ui.views.get_mut(idx)
+            && center.iter().all(|c| c.is_finite())
+        {
+            view.rotation = rotation;
+            view.center = center;
+        }
+    }
+
+    /// Snap the view's rotation to the nearest right angle when it is within
+    /// [`SNAP_DEGREES`] of it (after two fingers turned it), keeping `anchor` in place.
+    fn settle_rotation(&mut self, anchor: egui::Pos2) {
+        let Some(rotation) = self.app.session.active_index().and_then(|i| self.app.ui.views.get(i)).map(|v| v.rotation) else { return };
+        let nearest = (rotation / 90.0).round() * 90.0;
+        let off = nearest - rotation;
+        if off != 0.0 && off.abs() <= SNAP_DEGREES {
+            let flip = self.app.ui.view.flip_horizontal;
+            self.rotate_view(if flip { -off } else { off }, anchor);
+        }
+    }
+
     /// Apply the finger gesture gathered by `raw_input_hook`.
     fn apply_gesture(&mut self, ctx: &egui::Context) {
         let pan = std::mem::take(&mut self.pending_pan);
@@ -338,10 +398,46 @@ impl ModeShell {
             self.pan_view(ctx.pixels_per_point(), pan);
             ctx.request_repaint();
         }
+        let turn = std::mem::take(&mut self.pending_turn);
+        let anchor = self.turn_anchor.unwrap_or_else(|| self.app.last_canvas_rect.center());
+        if turn != 0.0 {
+            self.rotate_view(turn, anchor);
+            ctx.request_repaint();
+        }
+        if std::mem::take(&mut self.pending_settle) {
+            self.settle_rotation(anchor);
+            ctx.request_repaint();
+        }
+        if std::mem::take(&mut self.pending_fit) {
+            self.command(ctx, "view.fitOnScreen");
+        }
         match self.pending_tap.take() {
             Some(2) => self.command(ctx, "edit.undo"),
             Some(3) => self.command(ctx, "edit.redo"),
+            Some(4) => self.toggle_focus(),
             _ => {}
+        }
+    }
+
+    /// A one-finger hold on the canvas: the eyedropper picks where the finger is, as a press and
+    /// drag of the pointer, and the tool comes back after the frame that takes the release.
+    fn hold(&mut self, hold: Hold, events: &mut Vec<Event>) {
+        let press = |pos, pressed| Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        match hold {
+            Hold::Start(pos) => {
+                if self.app.ui.tool != Tool::Eyedropper {
+                    self.hold_return = Some(self.app.ui.tool);
+                    self.app.ui.tool = Tool::Eyedropper;
+                }
+                events.extend([Event::PointerMoved(pos), press(pos, true)]);
+            }
+            Hold::Move(pos) => events.push(Event::PointerMoved(pos)),
+            Hold::End(pos) => {
+                // Before the gesture's closing PointerGone, so the release lands where the finger was.
+                let at = if matches!(events.last(), Some(Event::PointerGone)) { events.len() - 1 } else { events.len() };
+                events.insert(at, press(pos, false));
+                self.restore_after_frame = self.hold_return.is_some();
+            }
         }
     }
 
@@ -375,7 +471,7 @@ impl eframe::App for ModeShell {
         self.platform_events();
         self.shortcuts(ctx);
         self.apply_gesture(ctx);
-        if let Some(wait) = self.scrub_wake.take() {
+        for wait in [self.scrub_wake.take(), self.gesture_wake.take()].into_iter().flatten() {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
         }
         self.app.logic(ctx, frame);
@@ -428,6 +524,21 @@ impl eframe::App for ModeShell {
             if gesture.tap.is_some() {
                 self.pending_tap = gesture.tap;
             }
+            if gesture.rotate != 0.0 {
+                self.pending_turn += gesture.rotate;
+            }
+            if gesture.anchor.is_some() {
+                self.turn_anchor = gesture.anchor;
+            }
+            self.pending_settle |= gesture.settle;
+            self.pending_fit |= gesture.fit;
+            if let Some(hold) = gesture.hold {
+                self.hold(hold, &mut raw_input.events);
+            }
+            if let Some(wait) = gesture.wake_in {
+                // Asked for in `logic`, like the scrub's.
+                self.gesture_wake = Some(wait);
+            }
         }
         self.app.raw_input_hook(ctx, raw_input);
     }
@@ -439,6 +550,12 @@ impl eframe::App for ModeShell {
             self.top_bar(ui);
         }
         self.app.ui(ui, frame);
+        if std::mem::take(&mut self.restore_after_frame)
+            && let Some(tool) = self.hold_return.take()
+        {
+            // PhotoCraft has taken the hold's release with the eyedropper: the tool comes back.
+            self.app.ui.tool = tool;
+        }
         if self.focus {
             self.focus_exit(&ctx);
         } else {

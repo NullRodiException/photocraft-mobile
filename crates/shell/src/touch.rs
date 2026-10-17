@@ -3,9 +3,17 @@
 //! [`TouchRouter::filter`] runs on each frame's raw input before PhotoCraft sees it. A finger that
 //! lands on the canvas starts a gesture: its touch events and the pointer events egui emulates
 //! from them are taken out, so nothing paints, and the router reports what the fingers did
-//! instead ([`Gesture`]): one finger pans, two or more pan and pinch, and a quick tap with two or
-//! three fingers is an undo or redo. The pen, fingers that land outside the canvas (panels,
-//! menus) and every touch while finger navigation is off pass through untouched.
+//! instead ([`Gesture`]), as Procreate does:
+//!
+//! - one finger pans, two or more pan, pinch and turn the view (the turn starts once the fingers
+//!   have twisted past [`ROTATE_START_DEGREES`], so a pinch doesn't tilt the image);
+//! - a quick tap with two, three or four fingers is undo, redo or full screen;
+//! - a quick pinch closed fits the image on screen;
+//! - one finger held still for [`HOLD_SECONDS`] picks a colour where it is (the eyedropper), and
+//!   keeps picking as it moves until it lifts.
+//!
+//! The pen, fingers that land outside the canvas (panels, menus) and every touch while finger
+//! navigation is off pass through untouched.
 //!
 //! Which contact is a finger comes from the platform ([`ToolKind`]): winit drops the tool type,
 //! so on Android `MainActivity` reports it for each new pointer.
@@ -23,6 +31,25 @@ pub enum ToolKind {
 const TAP_SECONDS: f64 = 0.3;
 /// …and no finger moves farther than this (points).
 const TAP_SLOP: f32 = 12.0;
+/// A finger held still this long (seconds) starts the eyedropper.
+pub const HOLD_SECONDS: f64 = 0.5;
+/// Two fingers turn the view once they have twisted this far (degrees).
+pub const ROTATE_START_DEGREES: f32 = 10.0;
+/// A pinch is quick if it ends within this long (seconds)…
+const QUICK_PINCH_SECONDS: f64 = 0.4;
+/// …and closes the fingers to less than this share of their spread: it fits the image on screen.
+const QUICK_PINCH_ZOOM: f32 = 0.6;
+
+/// A one-finger hold on the canvas: the eyedropper picks where the finger is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Hold {
+    /// The finger was held still long enough: start picking here.
+    Start(Pos2),
+    /// The held finger moved.
+    Move(Pos2),
+    /// The held finger lifted here.
+    End(Pos2),
+}
 
 /// What a frame of finger input asks of the view.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -33,14 +60,34 @@ pub struct Gesture {
     pub zoom: f32,
     /// …around this screen point (the fingers' centre).
     pub anchor: Option<Pos2>,
+    /// Turn the view by this much (degrees, clockwise on screen) around `anchor`.
+    pub rotate: f32,
+    /// A gesture that turned the view ended: snap the rotation to a right angle when it is close.
+    pub settle: bool,
     /// A gesture ended as a tap with this many fingers.
     pub tap: Option<usize>,
+    /// A quick pinch closed: fit the image on screen.
+    pub fit: bool,
+    /// The one-finger hold (eyedropper).
+    pub hold: Option<Hold>,
+    /// A finger is held still: check again after this many seconds, for the hold.
+    pub wake_in: Option<f64>,
 }
 
 impl Default for Gesture {
     fn default() -> Self {
-        Self { pan: Vec2::ZERO, zoom: 1.0, anchor: None, tap: None }
+        Self { pan: Vec2::ZERO, zoom: 1.0, anchor: None, rotate: 0.0, settle: false, tap: None, fit: false, hold: None, wake_in: None }
     }
+}
+
+/// The angle (degrees) from `a` to `b` on screen, clockwise from the x axis (y points down).
+fn angle(a: Pos2, b: Pos2) -> f32 {
+    (b.y - a.y).atan2(b.x - a.x).to_degrees()
+}
+
+/// `degrees` in −180…180.
+fn wrap(degrees: f32) -> f32 {
+    (degrees + 180.0).rem_euclid(360.0) - 180.0
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -63,6 +110,15 @@ pub struct TouchRouter {
     /// A contact of the gesture was cancelled (the pen took over, or the system found a palm): it
     /// is no tap.
     cancelled: bool,
+    /// How far the fingers have twisted (degrees), and whether that turns the view yet.
+    twist: f32,
+    rotating: bool,
+    /// The gesture's zoom so far (the product of each frame's).
+    zoom_total: f32,
+    /// The one finger is held: it picks colours instead of panning.
+    holding: bool,
+    /// Where the last finger was.
+    last_pos: Pos2,
 }
 
 /// Centre and mean distance to it.
@@ -126,6 +182,10 @@ impl TouchRouter {
                             self.max_fingers = 0;
                             self.travel = 0.0;
                             self.cancelled = false;
+                            self.twist = 0.0;
+                            self.rotating = false;
+                            self.zoom_total = 1.0;
+                            self.holding = false;
                             gesture_frame = true;
                         }
                         self.contacts.push(Contact { id, start: pos, pos });
@@ -151,20 +211,67 @@ impl TouchRouter {
                 gesture.anchor = Some(c1);
             }
         }
+        if let ([a0, b0, ..], [a1, b1, ..]) = (old.as_slice(), new.as_slice()) {
+            let turn = wrap(angle(*a1, *b1) - angle(*a0, *b0));
+            if turn.is_finite() {
+                self.twist += turn;
+                if self.rotating {
+                    gesture.rotate = turn;
+                } else if self.twist.abs() > ROTATE_START_DEGREES {
+                    self.rotating = true;
+                }
+            }
+        }
         if !(gesture.pan.x.is_finite() && gesture.pan.y.is_finite()) {
             gesture.pan = Vec2::ZERO;
         }
         if !(gesture.zoom.is_finite() && gesture.zoom > 0.0) {
             gesture.zoom = 1.0;
         }
+        self.zoom_total *= gesture.zoom;
+        if let Some(c) = self.contacts.first() {
+            self.last_pos = c.pos;
+        }
+        self.hold(&mut gesture, now);
         if self.active && self.contacts.is_empty() {
             self.active = false;
-            if now - self.started < TAP_SECONDS && self.travel < TAP_SLOP && !self.cancelled {
+            let quick = now - self.started < TAP_SECONDS && !self.cancelled;
+            if self.holding {
+                gesture.hold = Some(Hold::End(self.last_pos));
+            } else if quick && self.travel < TAP_SLOP {
                 gesture.tap = Some(self.max_fingers);
+            } else if self.max_fingers >= 2 && now - self.started < QUICK_PINCH_SECONDS && self.zoom_total < QUICK_PINCH_ZOOM {
+                gesture.fit = true;
             }
+            gesture.settle = self.rotating;
             events.push(Event::PointerGone);
         }
         gesture
+    }
+
+    /// The one-finger hold: a single finger that stays still for [`HOLD_SECONDS`] picks colours
+    /// (and no longer pans) until it lifts.
+    fn hold(&mut self, gesture: &mut Gesture, now: f64) {
+        let single = self.active && self.max_fingers == 1 && self.contacts.len() == 1 && !self.cancelled;
+        if self.holding {
+            // The view stays put while the finger picks colours.
+            *gesture = Gesture { tap: gesture.tap, ..Gesture::default() };
+            if single {
+                gesture.hold = Some(Hold::Move(self.last_pos));
+            }
+            return;
+        }
+        if !single || self.travel >= TAP_SLOP {
+            return;
+        }
+        let held = now - self.started;
+        if held >= HOLD_SECONDS {
+            self.holding = true;
+            gesture.pan = Vec2::ZERO;
+            gesture.hold = Some(Hold::Start(self.last_pos));
+        } else {
+            gesture.wake_in = Some(HOLD_SECONDS - held);
+        }
     }
 }
 
@@ -308,6 +415,86 @@ mod tests {
             assert_eq!(g.tap, Some(n as usize));
             assert_eq!(e, vec![Event::PointerGone]);
         }
+    }
+
+    /// Two fingers at `a` and `b` around (400, 400), as a frame's touch events.
+    fn two(phase: TouchPhase, a: (f32, f32), b: (f32, f32)) -> Vec<Event> {
+        vec![touch(1, phase, a.0, a.1), touch(2, phase, b.0, b.1)]
+    }
+
+    /// The pair turned by `deg` degrees around (400, 400), 100 points apart.
+    fn turned(deg: f32) -> ((f32, f32), (f32, f32)) {
+        let (s, c) = deg.to_radians().sin_cos();
+        ((400.0 - 50.0 * c, 400.0 - 50.0 * s), (400.0 + 50.0 * c, 400.0 + 50.0 * s))
+    }
+
+    #[test]
+    fn two_fingers_turn_the_view_once_they_twist_far_enough() {
+        let mut r = TouchRouter::default();
+        let (a, b) = turned(0.0);
+        run(&mut r, two(TouchPhase::Start, a, b), 0.0);
+        // A small twist (a pinch's wobble) turns nothing.
+        let (a, b) = turned(6.0);
+        assert_eq!(run(&mut r, two(TouchPhase::Move, a, b), 0.1).1.rotate, 0.0);
+        // Past the threshold, the view turns with the fingers, frame by frame.
+        let (a, b) = turned(12.0);
+        run(&mut r, two(TouchPhase::Move, a, b), 0.2);
+        let (a, b) = turned(20.0);
+        let g = run(&mut r, two(TouchPhase::Move, a, b), 0.3).1;
+        assert!((g.rotate - 8.0).abs() < 1e-3, "{g:?}");
+        assert_eq!(g.anchor, Some(pos2(400.0, 400.0)));
+        // Lifting settles the rotation (snaps it when near a right angle).
+        let (_, g) = run(&mut r, two(TouchPhase::End, a, b), 0.4);
+        assert!(g.settle);
+        // Turning back across ±180° stays a small step.
+        assert!((wrap(179.0 - -179.0) + 2.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_quick_pinch_closed_fits_the_image() {
+        let mut r = TouchRouter::default();
+        run(&mut r, two(TouchPhase::Start, (200.0, 400.0), (600.0, 400.0)), 0.0);
+        run(&mut r, two(TouchPhase::Move, (350.0, 400.0), (450.0, 400.0)), 0.15);
+        let (_, g) = run(&mut r, two(TouchPhase::End, (350.0, 400.0), (450.0, 400.0)), 0.25);
+        assert!(g.fit && g.tap.is_none(), "{g:?}");
+        // The same pinch, slowly: just a zoom.
+        let mut r = TouchRouter::default();
+        run(&mut r, two(TouchPhase::Start, (200.0, 400.0), (600.0, 400.0)), 0.0);
+        run(&mut r, two(TouchPhase::Move, (350.0, 400.0), (450.0, 400.0)), 0.6);
+        assert!(!run(&mut r, two(TouchPhase::End, (350.0, 400.0), (450.0, 400.0)), 0.9).1.fit);
+    }
+
+    #[test]
+    fn a_four_finger_tap_is_reported() {
+        let mut r = TouchRouter::default();
+        let down: Vec<Event> = (1..=4).map(|i| touch(i, TouchPhase::Start, 300.0 + 40.0 * i as f32, 400.0)).collect();
+        run(&mut r, down, 0.0);
+        let up: Vec<Event> = (1..=4).map(|i| touch(i, TouchPhase::End, 300.0 + 40.0 * i as f32, 400.0)).collect();
+        assert_eq!(run(&mut r, up, 0.1).1.tap, Some(4));
+    }
+
+    #[test]
+    fn a_finger_held_still_picks_colours_until_it_lifts() {
+        let mut r = TouchRouter::default();
+        let (_, g) = run(&mut r, with_pointer(1, TouchPhase::Start, 400.0, 400.0), 0.0);
+        assert_eq!(g.wake_in, Some(HOLD_SECONDS), "a frame is asked for when the hold is due");
+        // A frame with no events once the hold is due: the eyedropper starts where the finger is.
+        let (e, g) = run(&mut r, Vec::new(), HOLD_SECONDS + 0.01);
+        assert!(e.is_empty());
+        assert_eq!(g.hold, Some(Hold::Start(pos2(400.0, 400.0))));
+        // Moving now picks along the way instead of panning.
+        let (_, g) = run(&mut r, with_pointer(1, TouchPhase::Move, 460.0, 420.0), 0.8);
+        assert_eq!(g.hold, Some(Hold::Move(pos2(460.0, 420.0))));
+        assert_eq!(g.pan, Vec2::ZERO);
+        let (_, g) = run(&mut r, with_pointer(1, TouchPhase::End, 460.0, 420.0), 0.9);
+        assert_eq!(g.hold, Some(Hold::End(pos2(460.0, 420.0))));
+        assert_eq!(g.tap, None);
+        // A finger that moves before the hold is due just pans.
+        let mut r = TouchRouter::default();
+        run(&mut r, with_pointer(1, TouchPhase::Start, 400.0, 400.0), 0.0);
+        run(&mut r, with_pointer(1, TouchPhase::Move, 440.0, 400.0), 0.1);
+        let (_, g) = run(&mut r, Vec::new(), 1.0);
+        assert_eq!((g.hold, g.wake_in), (None, None));
     }
 
     #[test]

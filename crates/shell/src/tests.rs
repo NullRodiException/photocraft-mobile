@@ -298,6 +298,75 @@ fn fingers_on_the_canvas_pan_through_the_input_hook_and_the_pen_does_not() {
     assert_eq!(s.app.ui.views[idx].center, [190.0, 150.0]);
 }
 
+/// The on-screen angle (degrees) of the document's x axis.
+fn screen_angle_of_x(s: &ModeShell) -> f32 {
+    let v = photocraft_ui_egui::canvas::ViewXform::active(&s.app).unwrap().map_vec(egui::vec2(1.0, 0.0));
+    v.y.atan2(v.x).to_degrees()
+}
+
+#[test]
+fn two_fingers_turn_the_view_around_the_point_between_them() {
+    use photocraft_ui_egui::canvas::ViewXform;
+    let (mut s, idx) = shell_with_document();
+    s.app.last_canvas_rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(800.0, 600.0));
+    let anchor = egui::pos2(300.0, 200.0);
+    for flip in [false, true] {
+        s.app.ui.view.flip_horizontal = flip;
+        let doc = ViewXform::active(&s.app).unwrap().to_doc(anchor);
+        let before = screen_angle_of_x(&s);
+        s.rotate_view(30.0, anchor);
+        let after = ViewXform::active(&s.app).unwrap().to_screen(doc[0] as f32, doc[1] as f32);
+        assert!(after.distance(anchor) < 0.01, "flip {flip}: the spot under the fingers stays: {after:?}");
+        let turned = (screen_angle_of_x(&s) - before + 540.0).rem_euclid(360.0) - 180.0;
+        assert!((turned - 30.0).abs() < 0.01, "flip {flip}: the image turns clockwise with the fingers: {turned}");
+    }
+    // Lifting near a right angle snaps there; farther off, the rotation stays.
+    s.app.ui.view.flip_horizontal = false;
+    s.app.ui.views[idx].rotation = 87.0;
+    s.settle_rotation(anchor);
+    assert!((s.app.ui.views[idx].rotation - 90.0).abs() < 1e-3);
+    s.app.ui.views[idx].rotation = 80.0;
+    s.settle_rotation(anchor);
+    assert_eq!(s.app.ui.views[idx].rotation, 80.0);
+}
+
+#[test]
+fn holding_a_finger_picks_a_colour_and_gives_the_tool_back() {
+    use eframe::App;
+    let (s, _) = shell_with_document();
+    let mut s = s.with_touch_kind(Box::new(|_| Some(ToolKind::Finger)));
+    s.app.last_canvas_rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(800.0, 600.0));
+    s.app.ui.tool = Tool::Brush;
+    let ctx = egui::Context::default();
+    let feed = |s: &mut ModeShell, events: Vec<egui::Event>, time: f64| {
+        let mut raw = egui::RawInput { events, time: Some(time), ..Default::default() };
+        s.raw_input_hook(&ctx, &mut raw);
+        s.apply_gesture(&ctx);
+        raw.events
+    };
+    feed(&mut s, vec![touch_event(1, egui::TouchPhase::Start, 300.0, 300.0)], 0.0);
+    assert_eq!(s.gesture_wake, Some(touch::HOLD_SECONDS), "a frame is asked for when the hold is due");
+    let start = feed(&mut s, Vec::new(), 0.6);
+    assert_eq!(s.app.ui.tool, Tool::Eyedropper);
+    assert!(start.iter().any(|e| matches!(e, egui::Event::PointerButton { pressed: true, pos, .. } if *pos == egui::pos2(300.0, 300.0))), "{start:?}");
+    let end = feed(&mut s, vec![touch_event(1, egui::TouchPhase::End, 320.0, 300.0)], 0.8);
+    let release = end.iter().position(|e| matches!(e, egui::Event::PointerButton { pressed: false, .. }));
+    let gone = end.iter().position(|e| matches!(e, egui::Event::PointerGone));
+    assert!(release.is_some() && release < gone, "the release comes before the pointer goes: {end:?}");
+    // The eyedropper stays for the frame that takes the release; then the brush comes back.
+    assert_eq!(s.app.ui.tool, Tool::Eyedropper);
+    assert!(s.restore_after_frame);
+    assert_eq!(s.hold_return, Some(Tool::Brush));
+}
+
+#[test]
+fn a_four_finger_tap_toggles_full_screen() {
+    let mut s = shell();
+    s.pending_tap = Some(4);
+    s.apply_gesture(&egui::Context::default());
+    assert!(s.focused());
+}
+
 #[test]
 fn turning_finger_navigation_off_is_saved() {
     let saved: Rc<RefCell<Vec<bool>>> = Rc::default();

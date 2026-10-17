@@ -22,7 +22,7 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 | 5 | Amostras intermediárias da caneta ✅ | P1 | M |
 | 6 | Caneta com outro dedo já na tela ✅ | P1 | P |
 | 7 | Rejeição de palma e desfazer acidental ✅ | P1 | M |
-| 8 | Gestos que faltam (girar, encaixar, tela cheia, conta-gotas) | P1 | M |
+| 8 | Gestos que faltam (girar, encaixar, tela cheia, conta-gotas) ✅ | P1 | M |
 | 9 | Latência do traço | P1 | M–G |
 | 10 | Cache de arquivos que só cresce ✅ | P1 | P |
 | 11 | Arquivos recentes que sobrevivem ao cache | P1 | M |

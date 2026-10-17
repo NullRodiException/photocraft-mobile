@@ -325,8 +325,12 @@ Com a caneta, o dedo no canvas serve para navegar:
 |---|---|
 | arrastar com 1 dedo | move a vista |
 | 2 dedos | pinça (zoom em volta do centro dos dedos) e arrastar |
+| girar 2 dedos | gira a vista em volta do ponto entre os dedos, depois de 10° de torção (assim a pinça não entorta a imagem); ao soltar a até 5° de um ângulo reto, encaixa nele |
+| pinça rápida fechando | encaixa a imagem na tela |
+| segurar 1 dedo parado (0,5 s) | conta-gotas: pega a cor sob o dedo e continua pegando enquanto ele se move; ao soltar, volta a ferramenta anterior |
 | toque rápido com 2 dedos | desfazer |
 | toque rápido com 3 dedos | refazer |
+| toque rápido com 4 dedos | tela cheia (só a imagem), e de volta |
 
 Fora do canvas (menus, painéis, barras) o dedo funciona normalmente. Ações › Rápido › "Dedos
 navegam" desliga isso para quem pinta com o dedo. Segurar e deslizar (abaixo) não vale nas barras
