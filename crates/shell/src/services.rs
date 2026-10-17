@@ -20,7 +20,7 @@ const SHELL: &str = "shell.json";
 pub const RECOVERY: &str = "recovery";
 
 /// The shell's own settings (PhotoCraft keeps its preferences in `preferences.json`).
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ShellSettings {
     /// On a pen tablet, fingers on the canvas pan, pinch and tap undo/redo instead of painting.
     #[serde(default = "yes")]
@@ -32,6 +32,9 @@ pub struct ShellSettings {
     /// The colour popover's picker.
     #[serde(default)]
     pub color_selector: ColorSelector,
+    /// The colour popover's recent colours (RGB, 0–1), newest first.
+    #[serde(default)]
+    pub recent_colors: Vec<[f32; 3]>,
 }
 
 /// How the colour popover picks a colour.
@@ -52,13 +55,22 @@ fn yes() -> bool {
 
 impl Default for ShellSettings {
     fn default() -> Self {
-        Self { finger_navigates: true, options_bar: false, color_selector: ColorSelector::Square }
+        Self { finger_navigates: true, options_bar: false, color_selector: ColorSelector::Square, recent_colors: Vec::new() }
     }
 }
 
 /// The saved shell settings in `dir`; a missing or unreadable file starts from the defaults.
 pub fn load_settings(dir: Option<&Path>) -> ShellSettings {
-    dir.and_then(|d| std::fs::read_to_string(d.join(SHELL)).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    let mut settings: ShellSettings =
+        dir.and_then(|d| std::fs::read_to_string(d.join(SHELL)).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    // A file edited by hand can't put a colour out of range or make the list longer.
+    let recent = &mut settings.recent_colors;
+    recent.retain(|c| c.iter().all(|v| v.is_finite()));
+    for v in recent.iter_mut().flatten() {
+        *v = v.clamp(0.0, 1.0);
+    }
+    recent.truncate(crate::studio::RECENT_COLORS);
+    settings
 }
 
 /// Saves the shell settings into `dir`, logging (not failing) when that isn't possible.
@@ -218,8 +230,16 @@ mod tests {
     #[test]
     fn shell_settings_round_trip_and_default_to_finger_navigation() {
         let dir = temp_dir("shell");
-        assert_eq!(load_settings(Some(&dir)), ShellSettings { finger_navigates: true, options_bar: false, color_selector: ColorSelector::Square });
-        let changed = ShellSettings { finger_navigates: false, options_bar: true, color_selector: ColorSelector::Triangle };
+        assert_eq!(
+            load_settings(Some(&dir)),
+            ShellSettings { finger_navigates: true, options_bar: false, color_selector: ColorSelector::Square, recent_colors: Vec::new() }
+        );
+        let changed = ShellSettings {
+            finger_navigates: false,
+            options_bar: true,
+            color_selector: ColorSelector::Triangle,
+            recent_colors: vec![[1.0, 0.5, 0.0], [0.0, 0.0, 1.0]],
+        };
         save_settings(Some(&dir), &changed);
         assert_eq!(load_settings(Some(&dir)), changed);
         assert!(std::fs::read_to_string(dir.join(SHELL)).unwrap().contains("\"triangle\""));
@@ -227,12 +247,28 @@ mod tests {
         let older = load_settings(Some(&dir));
         assert!(!older.finger_navigates && !older.options_bar, "a field missing from an older file takes its default");
         assert_eq!(older.color_selector, ColorSelector::Square);
+        assert!(older.recent_colors.is_empty());
         std::fs::write(dir.join(SHELL), "{}").unwrap();
         assert!(load_settings(Some(&dir)).finger_navigates);
         assert!(!has_preferences(Some(&dir)));
         std::fs::write(dir.join(PREFS), "{}").unwrap();
         assert!(has_preferences(Some(&dir)));
         assert!(!has_preferences(None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recent_colors_load_in_range_and_no_more_than_the_popover_shows() {
+        let dir = temp_dir("recent");
+        std::fs::create_dir_all(&dir).unwrap();
+        // 1e40 overflows f32 to infinity.
+        let many: Vec<String> = (0..15).map(|i| format!("[{}, 0, 0]", i as f32 / 20.0)).collect();
+        let text = format!("{{\"recent_colors\": [[2, -1, 0.5], [1e40, 0, 0], {}]}}", many.join(", "));
+        std::fs::write(dir.join(SHELL), text).unwrap();
+        let recent = load_settings(Some(&dir)).recent_colors;
+        assert_eq!(recent.len(), crate::studio::RECENT_COLORS);
+        assert_eq!(recent[0], [1.0, 0.0, 0.5], "clamped into 0–1");
+        assert_eq!(recent[1], [0.0, 0.0, 0.0], "the infinite colour is dropped");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

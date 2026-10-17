@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use photocraft_mobile_shell::ShellSettings;
 use photocraft_mobile_shell::photocraft_mobile_modes::Modes;
 use photocraft_mobile_shell::services;
 use photocraft_ui_egui::{FileDialogAnswer, FileDialogReply, FileDialogRequest, Services};
@@ -38,6 +39,14 @@ pub fn load_modes() -> Modes {
 
 pub fn save_modes(modes: &Modes) {
     services::save_modes(config_dir().as_deref(), modes);
+}
+
+pub fn load_settings() -> ShellSettings {
+    services::load_settings(config_dir().as_deref())
+}
+
+pub fn save_settings(settings: &ShellSettings) {
+    services::save_settings(config_dir().as_deref(), settings);
 }
 
 /// Shows an Open, Folder or Save dialog without blocking the event loop: a helper thread waits

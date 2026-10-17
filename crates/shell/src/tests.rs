@@ -610,6 +610,24 @@ fn the_color_selector_choice_is_saved() {
 }
 
 #[test]
+fn recent_colors_are_saved_newest_first() {
+    let saved: Rc<RefCell<Vec<Vec<[f32; 3]>>>> = Rc::default();
+    let sink = saved.clone();
+    let start = ShellSettings { recent_colors: vec![[0.0, 0.0, 1.0]], ..ShellSettings::default() };
+    let mut s = shell().with_settings(start, Box::new(move |st| sink.borrow_mut().push(st.recent_colors.clone())));
+    s.remember_color([1.0, 0.0, 0.0]);
+    s.remember_color([1.0, 0.0, 0.0]);
+    assert_eq!(saved.borrow().len(), 1, "picking the newest colour again saves nothing");
+    s.remember_color([0.0, 0.0, 1.0]);
+    assert_eq!(saved.borrow().last().unwrap(), &vec![[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]], "an older colour moves to the front, once");
+    for i in 0..20 {
+        s.remember_color([i as f32 / 20.0, 1.0, 0.0]);
+    }
+    assert_eq!(s.settings.recent_colors.len(), studio::RECENT_COLORS);
+    assert_eq!(s.settings.recent_colors[0], [19.0 / 20.0, 1.0, 0.0]);
+}
+
+#[test]
 fn the_sensitivity_slider_moves_one_middle_point_and_reads_back() {
     use studio::{curve_for_sensitivity, sensitivity_of};
     assert_eq!(curve_for_sensitivity(0.0, [0.0, 1.0]), vec![[0.0, 0.0], [1.0, 1.0]], "the middle is linear");

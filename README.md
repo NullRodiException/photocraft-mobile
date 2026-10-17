@@ -98,7 +98,10 @@ xtask          `cargo xtask android`: compila, empacota, assina, instala e abre 
 ```
 
 As configurações ficam em `%APPDATA%\PhotoCraftMobile` (ou `PHOTOCRAFT_MOBILE_CONFIG_DIR`), não
-nas do PhotoCraft, porque trocar de modo reescreve a barra de ferramentas.
+nas do PhotoCraft, porque trocar de modo reescreve a barra de ferramentas. No Android, ficam no
+armazenamento interno do app. O shell grava `modes.json` (o modo e a última ferramenta de cada um) e
+`shell.json`: dedos navegam, sempre mostrar a barra de opções, o seletor de cor e as cores
+recentes.
 
 ## Comandos
 

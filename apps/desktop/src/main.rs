@@ -42,7 +42,9 @@ fn main() -> eframe::Result {
                     log::error!("couldn't open {file}: {e}");
                 }
             }
-            let mut shell = ModeShell::new(app, services::load_modes()).on_change(Box::new(services::save_modes));
+            let mut shell = ModeShell::new(app, services::load_modes())
+                .on_change(Box::new(services::save_modes))
+                .with_settings(services::load_settings(), Box::new(services::save_settings));
             if let Some(report) = crash_report {
                 shell = shell.with_crash_report(report, None);
             }

@@ -153,10 +153,9 @@ pub struct Studio {
     /// The colour disc's hue (degrees), saturation and value, and the colour they were made for.
     hsv: [f32; 3],
     hsv_rgb: Option<[f32; 3]>,
-    /// The press on the colour picker has picked a colour (it goes into the history on release).
+    /// The press on the colour picker has picked a colour (it goes into the history on release,
+    /// which the shell settings keep).
     picking: bool,
-    /// Newest first.
-    pub recent_colors: Vec<[f32; 3]>,
     /// The tool the modify button returns to after the eyedropper.
     modify_return: Option<Tool>,
     /// The side bar slider being dragged and its thumb (the preview bubble follows it).
@@ -203,7 +202,6 @@ impl Default for Studio {
             hsv: [0.0, 0.0, 0.0],
             hsv_rgb: None,
             picking: false,
-            recent_colors: Vec::new(),
             modify_return: None,
             dragging: None,
             curve_edit: None,
@@ -682,11 +680,16 @@ impl ModeShell {
         self.studio.hsv_rgb = Some(rgb);
     }
 
-    fn remember_color(&mut self, rgb: [f32; 3]) {
-        let recent = &mut self.studio.recent_colors;
+    /// Puts `rgb` first in the recent colours, and saves them (they outlive the app).
+    pub(crate) fn remember_color(&mut self, rgb: [f32; 3]) {
+        let recent = &mut self.settings.recent_colors;
+        if recent.first().is_some_and(|c| color32(*c) == color32(rgb)) {
+            return;
+        }
         recent.retain(|c| color32(*c) != color32(rgb));
         recent.insert(0, rgb);
         recent.truncate(RECENT_COLORS);
+        self.save_settings();
     }
 
     /// Whether pressure drives the active tool's brush size and opacity (`None`: unchanged).
@@ -1607,10 +1610,10 @@ impl ModeShell {
         section(ui, t, tr("Recent", "Recentes"));
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-            if self.studio.recent_colors.is_empty() {
+            if self.settings.recent_colors.is_empty() {
                 ui.label(egui::RichText::new(tr("Colors you pick show up here", "As cores que você escolher aparecem aqui")).color(t.text_faint));
             }
-            for &rgb in &self.studio.recent_colors {
+            for &rgb in &self.settings.recent_colors {
                 let (r, chip) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
                 ui.painter().circle(r.center(), 13.0, color32(rgb), Stroke::new(1.0, t.text_dim));
                 let label = hex(rgb);

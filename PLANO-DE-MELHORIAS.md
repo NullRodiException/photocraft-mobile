@@ -31,7 +31,7 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 | 14 | Layout para celular em retrato | P2 | M |
 | 15 | Barra lateral à direita | P2 | P |
 | 16 | Textos do shell só em inglês e português | P2 | M |
-| 17 | Configurações que não são salvas | P2 | P |
+| 17 | Configurações que não são salvas ✅ | P2 | P |
 | 18 | Painel de camadas pensado para toque | P2 | G |
 | 19 | Reagir à falta de memória | P2 | P |
 | 20 | Medir desempenho no aparelho | P2 | P |
@@ -206,6 +206,7 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 
 - As cores recentes (`Studio::recent_colors`) se perdem ao fechar o app. Elas devem ir para `ShellSettings`.
 - No desktop, `apps/desktop/src/main.rs` não chama `with_settings`. Por isso o seletor de cor e "Sempre mostrar a barra de opções" voltam ao padrão a cada execução.
+- **Feito:** as cores recentes ficam em `ShellSettings::recent_colors` (`shell.json`) e são salvas quando uma escolha termina, não a cada quadro do arraste. Ao carregar, cores fora de 0–1 são ajustadas, valores não finitos são descartados e a lista volta a ter no máximo 10 cores. O desktop chama `with_settings`. Verificado no emulador: as cores voltam depois de fechar o app. A cor de frente atual volta a preto, porque ela é do PhotoCraft, que não a salva.
 
 ### 18. Painel de camadas pensado para toque
 
