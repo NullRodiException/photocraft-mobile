@@ -123,8 +123,9 @@ Ao atualizar o checkout do PhotoCraft, copie o lock de novo se o build reclamar 
 
 `cargo xtask ci` roda, em ordem: `cargo fmt --check`, o Clippy com avisos como erro, os testes, o
 Clippy do crate Android para arm64-v8a (pelo `cargo ndk`, porque fora do Android esse crate compila
-vazio) e, por fim, diz se o `../photocraft` está no commit testado. `--no-android` pula o passo do
-Android quando não há NDK.
+vazio), os testes JVM do Java do app (`gradlew testReleaseUnitTest`, com o `JAVA_HOME`) e, por fim,
+diz se o `../photocraft` está no commit testado. `--no-android` pula os dois passos do Android
+quando não há NDK ou JDK.
 
 A CI no GitHub (`.github/workflows/ci.yml`) roda o mesmo `cargo xtask ci` no Linux, com este
 repositório e o `storytold/photocraft` lado a lado, o PhotoCraft no commit do `photocraft.rev`.
@@ -216,9 +217,20 @@ crate Android usa `unsafe_code = "deny"` em vez de `forbid` e libera só esse it
   - A rotação do corpo da caneta não existe na S Pen e fica em 0.
 - **Contorno do pincel ao pairar:** os eventos de hover da caneta movem o ponteiro do egui, e o
   PhotoCraft desenha o contorno do pincel antes de a caneta encostar.
-- **Rejeição de palma** (`MainActivity.java`): enquanto a caneta encosta ou paira sobre a tela, e
-  por 0,5 s depois, toques que começam com dedo ou palma são descartados. Com a caneta longe, os
-  dedos funcionam normalmente.
+- **Rejeição de palma** (`PalmFilter.java`, decidida contato por contato): enquanto a caneta
+  encosta ou paira sobre a tela, e por 0,5 s depois, contatos que começam com dedo ou palma são
+  descartados até saírem da tela. Com a caneta longe, os dedos funcionam normalmente.
+  - Um evento do Android traz todos os contatos da tela. Quando ele mistura a caneta com contatos
+    descartados, chega ao app refeito só com os que ficam. Assim a mão apoiada antes de a caneta
+    encostar não vaza para o PhotoCraft.
+  - Quando a caneta encosta, os dedos que o app já tinha são cancelados (`ACTION_CANCEL`). Sem
+    isso, o egui manteria o ponteiro no dedo e a caneta não pintaria. Um gesto com contato
+    cancelado nunca vira toque de desfazer ou refazer.
+  - A pressão e a inclinação vão para o Rust de toda caneta presente no evento, e não só do
+    contato de que o evento trata. Antes, com a mão apoiada, a pressão ficava parada no valor do
+    primeiro toque.
+  - O `PalmFilter` não usa tipos do Android, e os testes dele rodam na JVM
+    (`src/test/java`, pelo `cargo xtask ci`).
 - **Tela cheia imersiva** (`MainActivity.java`): barra de status, barra de navegação e a taskbar
   do One UI ficam escondidas. Um deslize a partir da borda as mostra por um instante.
 ### Campos numéricos: segurar e deslizar

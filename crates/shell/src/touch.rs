@@ -60,6 +60,9 @@ pub struct TouchRouter {
     max_fingers: usize,
     /// The farthest any finger of the gesture moved from where it landed (points).
     travel: f32,
+    /// A contact of the gesture was cancelled (the pen took over, or the system found a palm): it
+    /// is no tap.
+    cancelled: bool,
 }
 
 /// Centre and mean distance to it.
@@ -108,6 +111,7 @@ impl TouchRouter {
                             }
                             TouchPhase::End | TouchPhase::Cancel => {
                                 self.contacts.remove(i);
+                                self.cancelled |= phase == TouchPhase::Cancel;
                             }
                         }
                     } else if phase == TouchPhase::Start
@@ -121,6 +125,7 @@ impl TouchRouter {
                             self.started = now;
                             self.max_fingers = 0;
                             self.travel = 0.0;
+                            self.cancelled = false;
                             gesture_frame = true;
                         }
                         self.contacts.push(Contact { id, start: pos, pos });
@@ -154,7 +159,7 @@ impl TouchRouter {
         }
         if self.active && self.contacts.is_empty() {
             self.active = false;
-            if now - self.started < TAP_SECONDS && self.travel < TAP_SLOP {
+            if now - self.started < TAP_SECONDS && self.travel < TAP_SLOP && !self.cancelled {
                 gesture.tap = Some(self.max_fingers);
             }
             events.push(Event::PointerGone);
@@ -303,6 +308,26 @@ mod tests {
             assert_eq!(g.tap, Some(n as usize));
             assert_eq!(e, vec![Event::PointerGone]);
         }
+    }
+
+    #[test]
+    fn a_cancelled_contact_is_no_tap() {
+        // Two quick contacts, one cancelled (the pen took over, or the system saw a palm): no undo.
+        let mut r = TouchRouter::default();
+        let mut down = with_pointer(1, TouchPhase::Start, 400.0, 400.0);
+        down.push(touch(2, TouchPhase::Start, 500.0, 400.0));
+        run(&mut r, down, 0.0);
+        let mut up = vec![touch(1, TouchPhase::Cancel, 400.0, 400.0)];
+        up.push(touch(2, TouchPhase::End, 500.0, 400.0));
+        let (_, g) = run(&mut r, up, 0.1);
+        assert_eq!(g.tap, None);
+        assert!(!r.active());
+        // The next gesture starts clean.
+        let mut down = with_pointer(1, TouchPhase::Start, 400.0, 400.0);
+        down.push(touch(2, TouchPhase::Start, 500.0, 400.0));
+        run(&mut r, down, 1.0);
+        let up = vec![touch(1, TouchPhase::End, 400.0, 400.0), touch(2, TouchPhase::End, 500.0, 400.0)];
+        assert_eq!(run(&mut r, up, 1.1).1.tap, Some(2));
     }
 
     #[test]

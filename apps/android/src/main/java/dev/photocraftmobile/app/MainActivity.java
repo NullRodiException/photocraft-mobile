@@ -46,10 +46,11 @@ import java.util.concurrent.Executors;
  * <ul>
  *   <li><b>Immersive full screen.</b> The status bar, the navigation bar and the One UI taskbar
  *       are hidden, so they never cover the editor. A swipe from the edge shows them for a moment.
- *   <li><b>Palm rejection.</b> While a stylus (S Pen) touches or hovers over the screen, and for
- *       {@link #PEN_GRACE_MS} after it leaves, touches that start with a finger or palm are dropped
- *       before they reach the app, so a hand resting on the screen doesn't paint. With the pen
- *       away, fingers work as usual.
+ *   <li><b>Palm rejection</b> ({@link PalmFilter}), contact by contact. While a stylus (S Pen)
+ *       touches or hovers over the screen, and for a moment after it leaves, contacts that start
+ *       with a finger or palm are dropped before they reach the app, so a hand resting on the
+ *       screen doesn't paint. When the pen touches down, the fingers the app had are cancelled.
+ *       With the pen away, fingers work as usual.
  *   <li><b>Tool type.</b> Each new contact's tool (finger or pen) goes to the Rust side, which
  *       turns fingers on the canvas into navigation (pan, pinch, two/three-finger tap).
  *   <li><b>The pen itself.</b> Every stylus event (touching or hovering) goes to the Rust side
@@ -63,8 +64,6 @@ import java.util.concurrent.Executors;
  * </ul>
  */
 public class MainActivity extends GameActivity {
-    /** How long after the pen leaves the screen a new finger touch is still taken for the palm. */
-    private static final long PEN_GRACE_MS = 500;
     /** How often the Rust side's file requests are checked (ms). */
     private static final long POLL_MS = 150;
     /** How long a pause waits for the Rust side to take the autosave request (ms). */
@@ -77,12 +76,7 @@ public class MainActivity extends GameActivity {
     /** The app's cache folder, for the Rust side's clean-up (see {@link #tellCacheDir}). */
     private static final String CACHE_ENV = "PHOTOCRAFT_MOBILE_CACHE";
 
-    /** The pen is touching or hovering. */
-    private boolean penInRange;
-    /** When the pen last left (event time, ms). */
-    private long penLeftAt = Long.MIN_VALUE / 2;
-    /** The finger gesture in progress is being dropped (decided at its first contact). */
-    private boolean rejectingGesture;
+    private final PalmFilter palm = new PalmFilter();
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -227,26 +221,50 @@ public class MainActivity extends GameActivity {
 
     @Override
     protected boolean processMotionEvent(MotionEvent event) {
-        if (isPen(event)) {
-            trackPen(event);
+        int n = event.getPointerCount();
+        int[] ids = new int[n];
+        int[] tools = new int[n];
+        for (int i = 0; i < n; i++) {
+            ids[i] = event.getPointerId(i);
+            tools[i] = event.getToolType(i);
+        }
+        PalmFilter.Decision decision = palm.onEvent(event.getActionMasked(), event.getActionIndex(), ids, tools, event.getEventTime());
+        // Every pen on the screen, whatever contact the event is about.
+        reportPen(event, tools);
+        if (decision.cancel.length > 0) {
+            // Fingers the app had lose their contact first, so the pen gets egui's pointer.
+            MotionEvent cancel = subset(event, decision.cancel, MotionEvent.ACTION_CANCEL);
+            super.processMotionEvent(cancel);
+            cancel.recycle();
+        }
+        if (decision.keep == null) {
             reportTool(event);
-            reportPen(event);
             return super.processMotionEvent(event);
         }
-        int action = event.getActionMasked();
-        if (action == MotionEvent.ACTION_DOWN) {
-            // The whole gesture is kept or dropped together, so the app never sees half of one.
-            rejectingGesture = penInRange || event.getEventTime() - penLeftAt < PEN_GRACE_MS;
-        }
-        boolean drop = rejectingGesture && isFingerTouch(event);
-        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-            rejectingGesture = false;
-        }
-        if (drop) {
+        if (decision.dropped()) {
             return true;
         }
-        reportTool(event);
-        return super.processMotionEvent(event);
+        MotionEvent kept = subset(event, decision.keep, decision.action);
+        reportTool(kept);
+        boolean handled = super.processMotionEvent(kept);
+        kept.recycle();
+        return handled;
+    }
+
+    /** {@code event} with only the contacts at {@code indices}, and {@code action}. */
+    private static MotionEvent subset(MotionEvent event, int[] indices, int action) {
+        int n = indices.length;
+        MotionEvent.PointerProperties[] properties = new MotionEvent.PointerProperties[n];
+        MotionEvent.PointerCoords[] coords = new MotionEvent.PointerCoords[n];
+        for (int j = 0; j < n; j++) {
+            properties[j] = new MotionEvent.PointerProperties();
+            event.getPointerProperties(indices[j], properties[j]);
+            coords[j] = new MotionEvent.PointerCoords();
+            event.getPointerCoords(indices[j], coords[j]);
+        }
+        return MotionEvent.obtain(event.getDownTime(), event.getEventTime(), action, n, properties, coords, event.getMetaState(),
+                event.getButtonState(), event.getXPrecision(), event.getYPrecision(), event.getDeviceId(), event.getEdgeFlags(),
+                event.getSource(), event.getFlags());
     }
 
     /**
@@ -266,50 +284,26 @@ public class MainActivity extends GameActivity {
         }
     }
 
-    /** Sends a stylus event's pressure, tilt, orientation and buttons (winit drops all but pressure). */
-    private static void reportPen(MotionEvent event) {
-        int i = event.getActionIndex();
-        try {
-            nativePenSample(event.getActionMasked(), event.getX(i), event.getY(i), event.getPressure(i),
-                    event.getAxisValue(MotionEvent.AXIS_TILT, i), event.getOrientation(i),
-                    event.getButtonState(), event.getToolType(i));
-        } catch (UnsatisfiedLinkError e) {
-            // Not loaded yet: the pen paints with winit's pressure only.
-        }
-    }
-
-    private void trackPen(MotionEvent event) {
-        switch (event.getActionMasked()) {
-            case MotionEvent.ACTION_DOWN:
-            case MotionEvent.ACTION_MOVE:
-            case MotionEvent.ACTION_HOVER_ENTER:
-            case MotionEvent.ACTION_HOVER_MOVE:
-                penInRange = true;
-                break;
-            case MotionEvent.ACTION_UP:
-            case MotionEvent.ACTION_CANCEL:
-            case MotionEvent.ACTION_HOVER_EXIT:
-                // A pen touching the screen sends HOVER_EXIT just before DOWN; DOWN sets it back.
-                penInRange = false;
-                penLeftAt = event.getEventTime();
-                break;
-            default:
-                break;
-        }
-    }
-
-    private static boolean isPen(MotionEvent event) {
-        int tool = event.getToolType(event.getActionIndex());
-        return tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_ERASER;
-    }
-
-    private static boolean isFingerTouch(MotionEvent event) {
-        for (int i = 0; i < event.getPointerCount(); i++) {
-            if (event.getToolType(i) != MotionEvent.TOOL_TYPE_FINGER) {
-                return false;
+    /**
+     * Sends the pressure, tilt, orientation and buttons of every pen in the event (winit drops all
+     * but pressure). A pen that isn't the contact the event is about is still touching: it moved.
+     */
+    private static void reportPen(MotionEvent event, int[] tools) {
+        int masked = event.getActionMasked();
+        int actor = event.getActionIndex();
+        for (int i = 0; i < tools.length; i++) {
+            if (!PalmFilter.isPen(tools[i])) {
+                continue;
+            }
+            int action = i == actor || masked == MotionEvent.ACTION_CANCEL ? masked : MotionEvent.ACTION_MOVE;
+            try {
+                nativePenSample(action, event.getX(i), event.getY(i), event.getPressure(i), event.getAxisValue(MotionEvent.AXIS_TILT, i),
+                        event.getOrientation(i), event.getButtonState(), tools[i]);
+            } catch (UnsatisfiedLinkError e) {
+                // Not loaded yet: the pen paints with winit's pressure only.
+                return;
             }
         }
-        return event.getPointerCount() > 0;
     }
 
     // ---- Files ----------------------------------------------------------------------------

@@ -43,6 +43,12 @@ jobs:
             libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev \
             libgl1-mesa-dev libgtk-3-dev
 
+      # Gradle runs the JVM tests of the Android app's Java.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt

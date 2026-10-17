@@ -42,4 +42,6 @@ dependencies {
     // One Kotlin standard library: AndroidX pulls kotlin-stdlib 1.8 and the older -jdk7/-jdk8
     // artifacts 1.6, whose classes collide (checkReleaseDuplicateClasses).
     implementation(platform("org.jetbrains.kotlin:kotlin-bom:1.8.22"))
+    // The JVM tests of MainActivity's plain-Java parts (src/test/java), run by `cargo xtask ci`.
+    testImplementation("junit:junit:4.13.2")
 }

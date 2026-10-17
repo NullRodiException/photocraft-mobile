@@ -12,9 +12,10 @@
 //! its newest NDK. Gradle runs on `JAVA_HOME` (JDK 17+).
 //!
 //! `cargo xtask ci [--no-android]` is the check to run before a commit. It runs rustfmt, Clippy with
-//! warnings as errors, the tests, and Clippy on the Android crate for arm64-v8a through cargo-ndk
-//! (`--no-android` skips that step). At the end it notes whether `../photocraft` is at the commit
-//! recorded in `photocraft.rev`.
+//! warnings as errors, the tests, Clippy on the Android crate for arm64-v8a through cargo-ndk, and
+//! the JVM tests of the Android app's Java (Gradle, on `JAVA_HOME`). `--no-android` skips the two
+//! Android steps. At the end it notes whether `../photocraft` is at the commit recorded in
+//! `photocraft.rev`.
 //!
 //! `cargo xtask upstream [--accept]` reports whether `../photocraft` is at the commit this project
 //! was last tested with (`photocraft.rev`). `--accept` records the checkout's current commit there;
@@ -220,6 +221,10 @@ fn ci(args: &[String]) -> Result<(), String> {
             "-D",
             "warnings",
         ]))?;
+        // MainActivity's plain-Java parts (palm rejection) have JVM tests (Gradle, on JAVA_HOME).
+        let gradle_dir = root.join("apps").join("android");
+        let gradlew = gradle_dir.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
+        run(Command::new(&gradlew).current_dir(&gradle_dir).env("ANDROID_HOME", &sdk).args(["testReleaseUnitTest", "--console=plain", "--no-daemon"]))?;
     }
     match upstream_state(&root) {
         Ok(state) => eprintln!("{}", state.describe()),
