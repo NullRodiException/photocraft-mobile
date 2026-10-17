@@ -8,10 +8,11 @@
 //! `--mode vector|pixel|photo` captures just that mode. `--new 1600x1200` starts from a new
 //! document with a few strokes on it. With a document, `--popover actions|adjustments|selection|
 //! tools|brushes|color|pressure` also captures that popover open, and `--layers` the Layers panel.
-//! `--triangle` uses the triangle colour selector.
+//! `--triangle` uses the triangle colour selector, `--harmony analogous|complementary|monochromatic`
+//! the colour popover's harmony.
 
 use photocraft_mobile_shell::photocraft_mobile_modes::{Mode, Modes};
-use photocraft_mobile_shell::{ColorSelector, ModeShell, Popover, SidePanel};
+use photocraft_mobile_shell::{ColorSelector, Harmony, ModeShell, Popover, SidePanel};
 use photocraft_ui_egui::{PhotocraftApp, Services};
 use serde_json::json;
 
@@ -70,6 +71,10 @@ fn main() -> Result<(), String> {
     };
     let layers = args.iter().any(|a| a == "--layers");
     let triangle = args.iter().any(|a| a == "--triangle");
+    let harmony = match arg(&args, "--harmony") {
+        Some(id) => Some(Harmony::ALL.into_iter().find(|h| h.names().0.eq_ignore_ascii_case(&id)).ok_or_else(|| format!("unknown harmony {id}"))?),
+        None => None,
+    };
     let modes: Vec<Mode> = match arg(&args, "--mode") {
         Some(id) => vec![Mode::from_id(&id).ok_or_else(|| format!("unknown mode {id}"))?],
         None => Mode::ALL.to_vec(),
@@ -109,6 +114,9 @@ fn main() -> Result<(), String> {
         harness.state_mut().studio.side = layers.then_some(SidePanel::Layers);
         if triangle {
             harness.state_mut().settings.color_selector = ColorSelector::Triangle;
+        }
+        if let Some(h) = harmony {
+            harness.state_mut().settings.harmony = h;
         }
         harness.run_steps(6);
         let ctx = harness.ctx.clone();

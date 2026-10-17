@@ -27,6 +27,7 @@ use photocraft_ui_egui::{PhotocraftApp, Tool, i18n, icons};
 use serde_json::json;
 
 use crate::ModeShell;
+use crate::harmony::{self, Harmony, Palette};
 use crate::services::ColorSelector;
 
 /// Height of the top bar, in points.
@@ -37,6 +38,16 @@ pub const COMPACT_BELOW: f32 = 760.0;
 pub const MAX_BRUSH_SIZE: f32 = 2500.0;
 /// Colours kept in the colour popover's history.
 pub const RECENT_COLORS: usize = 10;
+/// The colour popover lists this many swatch groups (palettes) at most, newest first…
+const MAX_PALETTES: usize = 40;
+/// …and this many swatches of each.
+const MAX_PALETTE_SWATCHES: usize = 36;
+/// Width of a column of the colour popover when its lists go beside the picker (points).
+const COLOR_COLUMN: f32 = 330.0;
+/// The space between those columns (points).
+const COLOR_GAP: f32 = 24.0;
+/// The colour picker's largest size (points).
+const PICKER_SIDE: f32 = 300.0;
 /// The View › Screen Mode the studio keeps: no document tabs, no scroll bars.
 const STUDIO_SCREEN_MODE: &str = "fullScreenWithMenuBar";
 
@@ -100,6 +111,17 @@ pub(crate) enum Act {
     SwapColors,
     MoreColors,
     ColorSelector(ColorSelector),
+    /// The harmony the colour popover's palette uses.
+    Harmony(Harmony),
+    /// A colour of the harmony's palette: it becomes the foreground and the palette stays.
+    PaletteColor([f32; 3]),
+    /// Save the harmony's palette (RGB) to PhotoCraft's Swatches.
+    SavePalette(Harmony, Vec<[f32; 3]>),
+    /// A swatch of PhotoCraft's Swatches becomes the foreground.
+    UseSwatch {
+        group: String,
+        name: String,
+    },
     /// Preferences › Tools › Pressure Curve.
     PressureCurve(Vec<[f32; 2]>),
     /// Preferences › Tools › Use Tablet Pressure.
@@ -156,6 +178,16 @@ pub struct Studio {
     /// The press on the colour picker has picked a colour (it goes into the history on release,
     /// which the shell settings keep).
     picking: bool,
+    /// The colour (HSV) the harmony's palette is made from: the one picked on the disc, in Recent
+    /// or in Palettes. A colour taken from the palette itself (`palette_pin`, RGB, while it is the
+    /// foreground) leaves it alone, so the palette doesn't move under the finger.
+    pub(crate) palette_base: [f32; 3],
+    pub(crate) palette_pin: Option<[f32; 3]>,
+    /// The palette last saved to the Swatches (its button says so until the palette changes).
+    saved_palette: Option<Vec<Color32>>,
+    /// The Swatches library as the colour popover lists it, and the library revision it was
+    /// built for (built again when the popover opens).
+    swatch_rows: Option<(u64, std::rc::Rc<[SwatchRow]>)>,
     /// The tool the modify button returns to after the eyedropper.
     modify_return: Option<Tool>,
     /// The side bar slider being dragged and its thumb (the preview bubble follows it).
@@ -184,6 +216,16 @@ struct MenuItems {
     search: Option<(String, std::rc::Rc<[usize]>)>,
 }
 
+/// A group of PhotoCraft's Swatches as the colour popover's Palettes list it.
+#[derive(Debug)]
+pub(crate) struct SwatchRow {
+    pub group: String,
+    /// The first swatches' names and colours (RGB working space).
+    pub swatches: Vec<(String, [f32; 3])>,
+    /// How many more the group holds.
+    pub more: usize,
+}
+
 impl Default for Studio {
     fn default() -> Self {
         Self {
@@ -202,6 +244,10 @@ impl Default for Studio {
             hsv: [0.0, 0.0, 0.0],
             hsv_rgb: None,
             picking: false,
+            palette_base: [0.0, 0.0, 0.0],
+            palette_pin: None,
+            saved_palette: None,
+            swatch_rows: None,
             modify_return: None,
             dragging: None,
             curve_edit: None,
@@ -493,6 +539,12 @@ fn section(ui: &mut egui::Ui, t: &Tokens, text: &str) {
     ui.painter().text(pos2(rect.left() + 12.0, rect.center().y), Align2::LEFT_CENTER, text.to_uppercase(), FontId::proportional(11.5), t.text_faint);
 }
 
+/// A [`section`] heading that leaves the rest of its row free (for a button beside it).
+fn section_label(ui: &mut egui::Ui, t: &Tokens, text: &str) {
+    ui.add_space(12.0);
+    ui.label(egui::RichText::new(text.to_uppercase()).font(FontId::proportional(11.5)).color(t.text_faint));
+}
+
 /// A popover's title row.
 fn title(ui: &mut egui::Ui, t: &Tokens, text: &str) {
     ui.label(egui::RichText::new(text).font(FontId::proportional(22.0)).color(t.text));
@@ -665,6 +717,8 @@ impl ModeShell {
         self.studio.popover = if self.studio.popover == Some(p) { None } else { Some(p) };
         if self.studio.popover == Some(Popover::Color) {
             self.sync_hsv();
+            // The colour settings may have changed what CMYK and Lab swatches look like.
+            self.studio.swatch_rows = None;
         }
     }
 
@@ -690,6 +744,52 @@ impl ModeShell {
         recent.insert(0, rgb);
         recent.truncate(RECENT_COLORS);
         self.save_settings();
+    }
+
+    /// Adds `colors` (RGB) to PhotoCraft's Swatches as a new group named after `harmony`
+    /// ("Analogous 1"), which PhotoCraft keeps with its preferences.
+    pub(crate) fn save_palette(&mut self, harmony: Harmony, colors: &[[f32; 3]]) {
+        use photocraft_ui_egui::color_picker_ui::hex;
+        let (en, pt_name) = harmony.names();
+        let swatches = &self.app.session.presets.swatches;
+        let group = harmony::palette_name(tr(en, pt_name), |n| swatches.iter().any(|g| g.name == n));
+        for &rgb in colors {
+            let hex = hex(rgb);
+            if let Err(e) = self.app.run("swatches.add", json!({ "color": hex, "name": hex.to_uppercase(), "group": group })) {
+                log::warn!("swatches.add: {e}");
+                return;
+            }
+        }
+        self.studio.saved_palette = Some(colors.iter().map(|c| color32(*c)).collect());
+    }
+
+    /// The Swatches groups the colour popover lists, newest first, built again only when the
+    /// library changes.
+    pub(crate) fn swatch_rows(&mut self) -> std::rc::Rc<[SwatchRow]> {
+        let rev = self.app.session.presets.rev;
+        if let Some((built, rows)) = &self.studio.swatch_rows
+            && *built == rev
+        {
+            return rows.clone();
+        }
+        let conv = photocraft_engine::presets::swatches::SwatchConv::new(&self.app.session);
+        let rows: std::rc::Rc<[SwatchRow]> = self
+            .app
+            .session
+            .presets
+            .swatches
+            .iter()
+            .rev()
+            .filter(|g| !g.items.is_empty())
+            .take(MAX_PALETTES)
+            .map(|g| SwatchRow {
+                group: g.name.clone(),
+                swatches: g.items.iter().take(MAX_PALETTE_SWATCHES).map(|s| (s.name.clone(), conv.rgb(&s.color))).collect(),
+                more: g.items.len().saturating_sub(MAX_PALETTE_SWATCHES),
+            })
+            .collect();
+        self.studio.swatch_rows = Some((rev, rows.clone()));
+        rows
     }
 
     /// Whether pressure drives the active tool's brush size and opacity (`None`: unchanged).
@@ -807,6 +907,24 @@ impl ModeShell {
                 self.settings.color_selector = kind;
                 self.save_settings();
             }
+            Act::Harmony(harmony) => {
+                self.settings.harmony = harmony;
+                self.save_settings();
+            }
+            Act::PaletteColor(rgb) => {
+                self.apply_act(ctx, Act::Color(rgb));
+                self.studio.palette_pin = Some(rgb_of(self.app.session.tools.foreground));
+                self.remember_color(rgb);
+            }
+            Act::SavePalette(harmony, colors) => self.save_palette(harmony, &colors),
+            Act::UseSwatch { group, name } => match self.app.run("swatches.use", json!({ "swatch": name, "group": group })) {
+                Ok(_) => {
+                    self.studio.hsv_rgb = None;
+                    self.sync_hsv();
+                    self.remember_color(rgb_of(self.app.session.tools.foreground));
+                }
+                Err(e) => log::info!("swatches.use: {e}"),
+            },
             Act::PressureCurve(points) => {
                 // PhotoCraft saves its preferences itself once they change.
                 if let Err(e) = self.app.run("prefs.set", json!({ "path": "tools.pressureCurve", "value": points })) {
@@ -1114,7 +1232,8 @@ impl ModeShell {
             Popover::Selection => vec2(452.0, 580.0),
             Popover::Tools => vec2(452.0, 600.0),
             Popover::Brushes => vec2(600.0, 660.0),
-            Popover::Color => vec2(340.0, 660.0),
+            Popover::Color if color_side_by_side(screen, self.settings.color_selector) => vec2(2.0 * COLOR_COLUMN + COLOR_GAP + 2.0 * f32::from(PAD), 600.0),
+            Popover::Color => vec2(380.0, 860.0),
             Popover::Pressure => vec2(370.0, 700.0),
         };
         let (size, x, top) = if beside {
@@ -1538,12 +1657,40 @@ impl ModeShell {
         });
     }
 
-    /// The colour popover: the picker chosen in its header (a hue ring around a square, or around
-    /// a triangle with H, S, V bars), the foreground and background colours, the recent colours
-    /// and PhotoCraft's full Color Picker.
+    /// The colour popover: the picker column (see [`Self::color_picker`]), and the recent colours,
+    /// the harmony's palette (analogous, complementary or monochromatic) and the Swatches'
+    /// palettes ([`Self::color_lists`]), under it or, on a screen too short for both at full
+    /// size (a tablet in landscape), beside it.
     fn color_body(&mut self, ui: &mut egui::Ui, t: &Tokens, acts: &mut Vec<Act>) {
-        use photocraft_ui_egui::color_picker_ui::{hex, hsv_to_rgb};
         self.sync_hsv();
+        let fg = rgb_of(self.app.session.tools.foreground);
+        // A colour from anywhere but the palette itself makes a new palette.
+        if !self.studio.palette_pin.is_some_and(|p| color32(p) == color32(fg)) {
+            self.studio.palette_pin = None;
+            self.studio.palette_base = self.studio.hsv;
+        }
+        if ui.available_width() >= 2.0 * COLOR_COLUMN {
+            let h = ui.available_height();
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(vec2(COLOR_COLUMN, h), Layout::top_down(Align::Min), |ui| self.color_picker(ui, t, acts, false));
+                ui.add_space(COLOR_GAP);
+                ui.allocate_ui_with_layout(vec2(ui.available_width(), h), Layout::top_down(Align::Min), |ui| self.color_lists(ui, t, acts));
+            });
+        } else {
+            self.color_picker(ui, t, acts, true);
+            ui.add_space(4.0);
+            self.color_lists(ui, t, acts);
+        }
+    }
+
+    /// The picker chosen in the header (a hue ring around a square, or around a triangle with H,
+    /// S, V bars), the foreground and background colours and PhotoCraft's full Color Picker.
+    /// `lists_below`: the picker leaves room for the colour lists under it.
+    fn color_picker(&mut self, ui: &mut egui::Ui, t: &Tokens, acts: &mut Vec<Act>, lists_below: bool) {
+        use photocraft_ui_egui::color_picker_ui::{hex, hsv_to_rgb};
+        let fg = rgb_of(self.app.session.tools.foreground);
+        let bg = rgb_of(self.app.session.tools.background);
+        let harmony = self.settings.harmony;
         let selector = self.settings.color_selector;
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(tr("Colors", "Cores")).font(FontId::proportional(22.0)).color(t.text));
@@ -1562,11 +1709,13 @@ impl ModeShell {
         });
         ui.add_space(6.0);
         let mut hsv = self.studio.hsv;
-        let reserve = if selector == ColorSelector::Triangle { 236.0 } else { 150.0 };
-        let side = ui.available_width().min(ui.available_height() - reserve).clamp(150.0, 300.0);
+        let side = ui.available_width().min(ui.available_height() - picker_reserve(selector, lists_below)).clamp(150.0, PICKER_SIDE);
+        // The ring marks the palette's hues: the dragged colour's own while it moves.
+        let (before, base) = (self.studio.hsv, self.studio.palette_base);
+        let marks = move |now: [f32; 3]| palette_hues(&harmony.palette(if now == before { base } else { now }));
         let (mut changed, mut released) = match selector {
-            ColorSelector::Square => square_picker(ui, &mut hsv, side),
-            ColorSelector::Triangle => triangle_picker(ui, &mut hsv, side),
+            ColorSelector::Square => square_picker(ui, &mut hsv, side, &marks),
+            ColorSelector::Triangle => triangle_picker(ui, &mut hsv, side, &marks),
         };
         if selector == ColorSelector::Triangle {
             ui.add_space(10.0);
@@ -1577,14 +1726,14 @@ impl ModeShell {
         if changed {
             self.studio.hsv = hsv;
             self.studio.picking = true;
+            self.studio.palette_base = hsv;
+            self.studio.palette_pin = None;
             acts.push(Act::Color(hsv_to_rgb(hsv[0], hsv[1], hsv[2])));
         }
         // A pick that ends goes into the history; a tap that picked nothing doesn't.
         if released && std::mem::take(&mut self.studio.picking) {
             self.remember_color(hsv_to_rgb(hsv[0], hsv[1], hsv[2]));
         }
-        let fg = rgb_of(self.app.session.tools.foreground);
-        let bg = rgb_of(self.app.session.tools.background);
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             // Foreground over background; a tap swaps them.
@@ -1606,24 +1755,158 @@ impl ModeShell {
                 }
             });
         });
-        ui.add_space(10.0);
-        section(ui, t, tr("Recent", "Recentes"));
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-            if self.settings.recent_colors.is_empty() {
-                ui.label(egui::RichText::new(tr("Colors you pick show up here", "As cores que você escolher aparecem aqui")).color(t.text_faint));
-            }
-            for &rgb in &self.settings.recent_colors {
-                let (r, chip) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
-                ui.painter().circle(r.center(), 13.0, color32(rgb), Stroke::new(1.0, t.text_dim));
-                let label = hex(rgb);
-                chip.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
-                if chip.clicked() {
-                    acts.push(Act::Color(rgb));
+    }
+
+    /// The recent colours, the harmony's palette and the Swatches' palettes, scrolling.
+    fn color_lists(&mut self, ui: &mut egui::Ui, t: &Tokens, acts: &mut Vec<Act>) {
+        use photocraft_ui_egui::color_picker_ui::{hex, hsv_to_rgb};
+        let fg = rgb_of(self.app.session.tools.foreground);
+        let harmony = self.settings.harmony;
+        let palette = harmony.palette(self.studio.palette_base);
+        let colors: Vec<[f32; 3]> = palette.colors.iter().map(|c| hsv_to_rgb(c[0], c[1], c[2])).collect();
+        let saved = self.studio.saved_palette.as_ref().is_some_and(|s| s.iter().copied().eq(colors.iter().map(|c| color32(*c))));
+        let rows = self.swatch_rows();
+        egui::ScrollArea::vertical().id_salt("photocraft-mobile-colors").auto_shrink([false, false]).show(ui, |ui| {
+            // Clear of the scroll bar.
+            ui.set_max_width(ui.available_width() - 8.0);
+            section(ui, t, tr("Recent", "Recentes"));
+            ui.horizontal_wrapped(|ui| {
+                // The ten recent colours fit one row.
+                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                if self.settings.recent_colors.is_empty() {
+                    ui.label(egui::RichText::new(tr("Colors you pick show up here", "As cores que você escolher aparecem aqui")).color(t.text_faint));
                 }
+                for &rgb in &self.settings.recent_colors {
+                    let (r, chip) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
+                    ui.painter().circle(r.center(), 12.0, color32(rgb), Stroke::new(1.0, t.text_dim));
+                    let label = hex(rgb);
+                    chip.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+                    if chip.clicked() {
+                        acts.push(Act::Color(rgb));
+                    }
+                }
+            });
+            section(ui, t, tr("Harmony", "Harmonia"));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let w = (ui.available_width() - 12.0) / 3.0;
+                let labels = Harmony::ALL.map(|h| {
+                    let (en, pt_name) = h.names();
+                    tr(en, pt_name)
+                });
+                let size = chip_text_size(ui, &labels, w);
+                for (h, label) in Harmony::ALL.into_iter().zip(labels) {
+                    if chip_sized(ui, t, label, h == harmony, w, size).clicked() && h != harmony {
+                        acts.push(Act::Harmony(h));
+                    }
+                }
+            });
+            ui.add_space(8.0);
+            if let Some(rgb) = palette_row(ui, t, &palette, &colors, fg) {
+                acts.push(Act::PaletteColor(rgb));
+            }
+            ui.add_space(8.0);
+            let label = if saved { tr("Saved to Swatches", "Salva nas Amostras") } else { tr("Save palette", "Salvar paleta") };
+            let tip = tr("Adds the palette to PhotoCraft's Swatches as a new group", "Adiciona a paleta às Amostras do PhotoCraft como um grupo novo");
+            let w = ui.available_width();
+            if chip(ui, t, label, saved, w).on_hover_text(tip).clicked() && !saved {
+                acts.push(Act::SavePalette(harmony, colors.clone()));
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                section_label(ui, t, tr("Palettes", "Paletas"));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let tip = tr("Rename, reorder and delete them in the Swatches panel", "Renomear, reordenar e apagar no painel Amostras");
+                    if ui.button(tr("Swatches…", "Amostras…")).on_hover_text(tip).clicked() {
+                        acts.push(Act::Command("window.panel.swatches".into()));
+                    }
+                });
+            });
+            if rows.is_empty() {
+                ui.label(egui::RichText::new(tr("Palettes you save show up here", "As paletas que você salvar aparecem aqui")).color(t.text_faint));
+            }
+            for row in rows.iter() {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(&row.group).size(12.5).color(t.text_dim));
+                ui.horizontal_wrapped(|ui| {
+                    // A group of ten (as PhotoCraft's own) fits one row.
+                    ui.spacing_mut().item_spacing = vec2(5.0, 5.0);
+                    for (name, rgb) in &row.swatches {
+                        let (r, chip) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
+                        let on = color32(*rgb) == color32(fg);
+                        ui.painter().rect(
+                            r.shrink(1.0),
+                            6.0,
+                            color32(*rgb),
+                            Stroke::new(if on { 2.5 } else { 1.0 }, if on { t.text } else { t.text_dim }),
+                            StrokeKind::Inside,
+                        );
+                        chip.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+                        if chip.on_hover_text(name).clicked() {
+                            acts.push(Act::UseSwatch { group: row.group.clone(), name: name.clone() });
+                        }
+                    }
+                    if row.more > 0 {
+                        ui.label(egui::RichText::new(format!("+{}", row.more)).color(t.text_faint));
+                    }
+                });
             }
         });
     }
+}
+
+/// The height the colour popover keeps under its picker: the bars (triangle), the foreground and
+/// background row and, with `lists_below`, the recent colours and the harmony's palette (the rest
+/// scrolls).
+fn picker_reserve(selector: ColorSelector, lists_below: bool) -> f32 {
+    let bars = if selector == ColorSelector::Triangle { 110.0 } else { 0.0 };
+    bars + if lists_below { 320.0 } else { 70.0 }
+}
+
+/// Whether the colour popover on `screen` puts its lists beside the picker: the screen is too
+/// short for them under a full-size picker, and wide enough for two columns.
+pub fn color_side_by_side(screen: Rect, selector: ColorSelector) -> bool {
+    // The top bar, the popover's margins and its header.
+    let chrome = BAR_HEIGHT + 22.0 + 28.0 + 42.0;
+    screen.height() < chrome + PICKER_SIDE + picker_reserve(selector, true) && screen.width() >= 2.0 * COLOR_COLUMN + COLOR_GAP + 44.0
+}
+
+/// The distinct hues of `palette` (the ones its colour ring marks).
+fn palette_hues(palette: &Palette) -> Vec<f32> {
+    let mut hues: Vec<f32> = Vec::new();
+    for c in &palette.colors {
+        if !hues.iter().any(|h| (h - c[0]).abs() < 0.5) {
+            hues.push(c[0]);
+        }
+    }
+    hues
+}
+
+/// The harmony's palette (`colors`, RGB) as a row of swatches: the base marked with a dot, the
+/// foreground ringed. Returns the colour tapped.
+fn palette_row(ui: &mut egui::Ui, t: &Tokens, palette: &Palette, colors: &[[f32; 3]], fg: [f32; 3]) -> Option<[f32; 3]> {
+    const GAP: f32 = 6.0;
+    let n = colors.len().max(1) as f32;
+    let w = ((ui.available_width() - GAP * (n - 1.0)) / n).max(20.0);
+    let mut tapped = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = GAP;
+        for (i, &rgb) in colors.iter().enumerate() {
+            let (r, resp) = ui.allocate_exact_size(vec2(w, 44.0), Sense::click());
+            let fill = color32(rgb);
+            let on = fill == color32(fg);
+            ui.painter().rect(r, 10.0, fill, Stroke::new(if on { 3.0 } else { 1.0 }, if on { t.text } else { t.card_border }), StrokeKind::Inside);
+            if i == palette.base {
+                ui.painter().circle_filled(pos2(r.center().x, r.bottom() - 9.0), 3.5, ink_on(fill));
+            }
+            let label = photocraft_ui_egui::color_picker_ui::hex(rgb);
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, &label));
+            if resp.clicked() {
+                tapped = Some(rgb);
+            }
+        }
+    });
+    tapped
 }
 
 /// Width of the hue ring around both colour pickers (points).
@@ -1634,8 +1917,8 @@ fn hsv_color(h: f32, s: f32, v: f32) -> Color32 {
 }
 
 /// The hue ring between `inner` and `outer` around `c`, with its knob at hue `h` (degrees,
-/// clockwise from the right).
-fn hue_ring(painter: &egui::Painter, c: Pos2, inner: f32, outer: f32, h: f32) {
+/// clockwise from the right) and a small ring at each of the `marks` hues (the palette's).
+fn hue_ring(painter: &egui::Painter, c: Pos2, inner: f32, outer: f32, h: f32, marks: &[f32]) {
     let mut mesh = egui::Mesh::default();
     const N: u32 = 120;
     for i in 0..=N {
@@ -1652,9 +1935,16 @@ fn hue_ring(painter: &egui::Painter, c: Pos2, inner: f32, outer: f32, h: f32) {
         }
     }
     painter.add(egui::Shape::mesh(mesh));
-    let a = h.to_radians();
-    let knob = c + vec2(a.cos(), a.sin()) * (inner + outer) / 2.0;
-    painter.circle(knob, (outer - inner) / 2.0 - 3.0, hsv_color(h, 1.0, 1.0), Stroke::new(3.0, Color32::WHITE));
+    let on_ring = |deg: f32| {
+        let a = deg.to_radians();
+        c + vec2(a.cos(), a.sin()) * (inner + outer) / 2.0
+    };
+    let mark = (outer - inner) / 2.0 - 7.0;
+    for &m in marks {
+        painter.circle_stroke(on_ring(m), mark, Stroke::new(3.5, Color32::from_black_alpha(90)));
+        painter.circle_stroke(on_ring(m), mark, Stroke::new(2.0, Color32::WHITE));
+    }
+    painter.circle(on_ring(h), (outer - inner) / 2.0 - 3.0, hsv_color(h, 1.0, 1.0), Stroke::new(3.0, Color32::WHITE));
 }
 
 /// Where the press that is dragging `resp` began, and where the pointer is now.
@@ -1665,9 +1955,12 @@ fn drag_points(ui: &egui::Ui, resp: &egui::Response) -> Option<(Pos2, Pos2)> {
     Some((ui.input(|i| i.pointer.press_origin())?, resp.interact_pointer_pos()?))
 }
 
+/// The hues a colour picker's ring marks for the colour it shows.
+type Marks<'a> = &'a dyn Fn([f32; 3]) -> Vec<f32>;
+
 /// A hue ring with the saturation (across) and brightness (up) square inside. Returns whether
 /// `hsv` changed and whether a pick just ended.
-fn square_picker(ui: &mut egui::Ui, hsv: &mut [f32; 3], side: f32) -> (bool, bool) {
+fn square_picker(ui: &mut egui::Ui, hsv: &mut [f32; 3], side: f32, marks: Marks) -> (bool, bool) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), side), Sense::click_and_drag());
     let c = rect.center();
     let outer = side / 2.0;
@@ -1689,7 +1982,7 @@ fn square_picker(ui: &mut egui::Ui, hsv: &mut [f32; 3], side: f32) -> (bool, boo
         }
     }
     let painter = ui.painter_at(rect.expand(4.0));
-    hue_ring(&painter, c, inner, outer, h);
+    hue_ring(&painter, c, inner, outer, h, &marks([h, s, v]));
     let mut mesh = egui::Mesh::default();
     const G: u32 = 14;
     for j in 0..=G {
@@ -1742,7 +2035,7 @@ pub fn triangle_sv(weights: [f32; 3], s: f32) -> (f32, f32) {
 /// A hue ring around a triangle whose corners are the pure hue (right), white (left) and black
 /// (top), like Krita's Advanced Color Selector. Returns whether `hsv` changed and whether a pick
 /// just ended.
-fn triangle_picker(ui: &mut egui::Ui, hsv: &mut [f32; 3], side: f32) -> (bool, bool) {
+fn triangle_picker(ui: &mut egui::Ui, hsv: &mut [f32; 3], side: f32, marks: Marks) -> (bool, bool) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), side), Sense::click_and_drag());
     let c = rect.center();
     let outer = side / 2.0;
@@ -1768,7 +2061,7 @@ fn triangle_picker(ui: &mut egui::Ui, hsv: &mut [f32; 3], side: f32) -> (bool, b
         }
     }
     let painter = ui.painter_at(rect.expand(4.0));
-    hue_ring(&painter, c, inner, outer, h);
+    hue_ring(&painter, c, inner, outer, h, &marks([h, s, v]));
     // The triangle, subdivided so each vertex has its exact colour (hue · s·v + white · (1−s)·v).
     let mut mesh = egui::Mesh::default();
     const N: u32 = 16;
@@ -1903,6 +2196,19 @@ pub fn sensitivity_of(points: &Curve) -> f32 {
 
 /// A preset button of the pen sensitivity popover.
 fn chip(ui: &mut egui::Ui, t: &Tokens, label: &str, on: bool, width: f32) -> egui::Response {
+    chip_sized(ui, t, label, on, width, 14.0)
+}
+
+/// The largest text size (up to 14 points) at which every one of `labels` fits a chip `width`
+/// wide.
+fn chip_text_size(ui: &egui::Ui, labels: &[&str], width: f32) -> f32 {
+    let widest = labels.iter().map(|l| ui.painter().layout_no_wrap((*l).to_string(), FontId::proportional(14.0), Color32::WHITE).size().x).fold(0.0, f32::max);
+    let room = width - 14.0;
+    if widest > room && widest > 0.0 { (14.0 * room / widest).max(10.0) } else { 14.0 }
+}
+
+/// A [`chip`] whose label is `size` points.
+fn chip_sized(ui: &mut egui::Ui, t: &Tokens, label: &str, on: bool, width: f32, size: f32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 36.0), Sense::click());
     let (fill, ink) = if on {
         (t.accent, ink_on(t.accent))
@@ -1912,7 +2218,7 @@ fn chip(ui: &mut egui::Ui, t: &Tokens, label: &str, on: bool, width: f32) -> egu
         (t.field, t.text)
     };
     ui.painter().rect_filled(rect, 10.0, fill);
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(14.0), ink);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(size), ink);
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, label));
     resp
 }

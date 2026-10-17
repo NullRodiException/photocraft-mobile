@@ -13,6 +13,8 @@ use photocraft_format::RecoveryStore;
 use photocraft_mobile_modes::Modes;
 use photocraft_ui_egui::{ExportSettings, Recoverable, Services};
 
+use crate::harmony::Harmony;
+
 const PREFS: &str = "preferences.json";
 const MODES: &str = "modes.json";
 const SHELL: &str = "shell.json";
@@ -35,6 +37,9 @@ pub struct ShellSettings {
     /// The colour popover's recent colours (RGB, 0–1), newest first.
     #[serde(default)]
     pub recent_colors: Vec<[f32; 3]>,
+    /// The harmony the colour popover makes its palette with.
+    #[serde(default)]
+    pub harmony: Harmony,
 }
 
 /// How the colour popover picks a colour.
@@ -55,7 +60,7 @@ fn yes() -> bool {
 
 impl Default for ShellSettings {
     fn default() -> Self {
-        Self { finger_navigates: true, options_bar: false, color_selector: ColorSelector::Square, recent_colors: Vec::new() }
+        Self { finger_navigates: true, options_bar: false, color_selector: ColorSelector::Square, recent_colors: Vec::new(), harmony: Harmony::Analogous }
     }
 }
 
@@ -232,22 +237,31 @@ mod tests {
         let dir = temp_dir("shell");
         assert_eq!(
             load_settings(Some(&dir)),
-            ShellSettings { finger_navigates: true, options_bar: false, color_selector: ColorSelector::Square, recent_colors: Vec::new() }
+            ShellSettings {
+                finger_navigates: true,
+                options_bar: false,
+                color_selector: ColorSelector::Square,
+                recent_colors: Vec::new(),
+                harmony: Harmony::Analogous
+            }
         );
         let changed = ShellSettings {
             finger_navigates: false,
             options_bar: true,
             color_selector: ColorSelector::Triangle,
             recent_colors: vec![[1.0, 0.5, 0.0], [0.0, 0.0, 1.0]],
+            harmony: Harmony::Monochromatic,
         };
         save_settings(Some(&dir), &changed);
         assert_eq!(load_settings(Some(&dir)), changed);
-        assert!(std::fs::read_to_string(dir.join(SHELL)).unwrap().contains("\"triangle\""));
+        let text = std::fs::read_to_string(dir.join(SHELL)).unwrap();
+        assert!(text.contains("\"triangle\"") && text.contains("\"monochromatic\""), "{text}");
         std::fs::write(dir.join(SHELL), "{\"finger_navigates\":false}").unwrap();
         let older = load_settings(Some(&dir));
         assert!(!older.finger_navigates && !older.options_bar, "a field missing from an older file takes its default");
         assert_eq!(older.color_selector, ColorSelector::Square);
         assert!(older.recent_colors.is_empty());
+        assert_eq!(older.harmony, Harmony::Analogous);
         std::fs::write(dir.join(SHELL), "{}").unwrap();
         assert!(load_settings(Some(&dir)).finger_navigates);
         assert!(!has_preferences(Some(&dir)));

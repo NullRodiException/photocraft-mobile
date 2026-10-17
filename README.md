@@ -40,13 +40,29 @@ PhotoCraft ficam escondidos. No lugar deles:
 | Todas as ferramentas (grade) | todas as ferramentas do modo; mostra o ícone da ferramenta ativa quando ela não é uma das três ao lado |
 | 3 ferramentas do modo | Pixel: Pincel, Borrar, Borracha · Vetor: Caneta, Retângulo, Texto · Foto: Recuperação, Carimbo, Subexposição. Tocar de novo na ferramenta de pincel ativa abre a **Biblioteca de pincéis** (grupos à esquerda, traços de prévia à direita) |
 | Camadas | abre e fecha o painel Camadas à direita |
-| Círculo de cor | o popover de **Cores**: seletor em **quadrado** (anel de matiz + saturação/brilho) ou em **triângulo** (anel + triângulo matiz/branco/preto e barras H/S/V, como o Advanced Color Selector do Krita), escolhido no cabeçalho e salvo; cor de frente e fundo (toque troca), cores recentes e "Mais…" (o seletor completo do PhotoCraft) |
+| Círculo de cor | o popover de **Cores**: seletor em **quadrado** (anel de matiz + saturação/brilho) ou em **triângulo** (anel + triângulo matiz/branco/preto e barras H/S/V, como o Advanced Color Selector do Krita), escolhido no cabeçalho e salvo; cor de frente e fundo (toque troca), "Mais…" (o seletor completo do PhotoCraft) e, rolando, as cores recentes, a **Harmonia** e as **Paletas** (veja abaixo) |
 
 **Barra lateral** flutuando sobre o canvas: tamanho do pincel (escala logarítmica, 1 a 2500 px),
 o botão **modificar** (conta-gotas; tocar de novo volta para a ferramenta anterior), opacidade
 (do pincel, ou do preenchimento no Degradê e no Balde), **sensibilidade da caneta**, desfazer e
 refazer. Enquanto um slider se move, um balão mostra o pincel no tamanho real na tela ou a
 porcentagem.
+
+**Harmonia e paletas** (no popover de Cores, `crates/shell/src/harmony.rs`): a partir da cor
+escolhida, a Harmonia monta uma paleta, e o anel de matiz marca as matizes dela:
+- **Análogas:** a cor e as vizinhas no círculo, de 30° em 30°, duas de cada lado;
+- **Complementares:** a cor e a matiz oposta (180°), cada uma com um tom mais escuro e um mais
+  claro;
+- **Monocromáticas:** cinco tons da mesma matiz, do escuro ao claro. A divisão entre tons escuros
+  e claros depende de quanto espaço a cor deixa de cada lado, então preto e branco também dão
+  cinco tons diferentes.
+
+Tocar numa cor da paleta a torna a cor de frente e a põe nas recentes, e a paleta não muda. Uma
+cor escolhida no disco, nas recentes ou nas paletas gera uma paleta nova. A harmonia escolhida é
+salva. **Salvar paleta** cria um grupo novo nas **Amostras** do PhotoCraft ("Análogas 1",
+"Complementares 2"…), que o PhotoCraft guarda com as preferências e exporta em `.aco`/`.ase`.
+A seção **Paletas** lista os grupos das Amostras, do mais novo ao mais antigo; tocar numa amostra
+a usa, e **Amostras…** abre o painel do PhotoCraft para renomear, reordenar ou apagar.
 
 **Sensibilidade da caneta** (o medidor fixo na barra lateral, ou Ações › Rápido): um painel ao
 lado da barra com:
@@ -85,6 +101,7 @@ crates/modes   lógica pura dos modos (sem UI, sem PhotoCraft): listas de ferram
                workspace, memória da última ferramenta. Compila para qualquer alvo.
 crates/shell   ModeShell: embrulha o PhotocraftApp na interface (egui).
                studio.rs: barra superior, barra lateral, popovers, seletores de cor.
+               harmony.rs: paletas análogas, complementares e monocromáticas.
                touch.rs: gestos de dedo no canvas (pan, pinça, desfazer/refazer).
                services.rs: serviços comuns (codecs, gravação atômica, configurações).
                share.rs: exporta a imagem para compartilhar ou salvar na galeria.
@@ -101,8 +118,9 @@ xtask          `cargo xtask android`: compila, empacota, assina, instala e abre 
 As configurações ficam em `%APPDATA%\PhotoCraftMobile` (ou `PHOTOCRAFT_MOBILE_CONFIG_DIR`), não
 nas do PhotoCraft, porque trocar de modo reescreve a barra de ferramentas. No Android, ficam no
 armazenamento interno do app. O shell grava `modes.json` (o modo e a última ferramenta de cada um) e
-`shell.json`: dedos navegam, sempre mostrar a barra de opções, o seletor de cor e as cores
-recentes.
+`shell.json`: dedos navegam, sempre mostrar a barra de opções, o seletor de cor, as cores
+recentes e a harmonia. As paletas salvas são grupos das Amostras do PhotoCraft e ficam nas
+preferências dele.
 
 ## Comandos
 
@@ -114,7 +132,8 @@ cargo test                                               # todos os testes
 cargo clippy --all-targets -- -D warnings
 cargo run --release -p photocraft-mobile-shell --example snapshot -- --out shots --size 1280x800
 # com um documento de exemplo e um popover aberto (actions, adjustments, selection, tools,
-# brushes, color); --layers abre o painel Camadas e --triangle usa o seletor de cor em triângulo
+# brushes, color); --layers abre o painel Camadas, --triangle usa o seletor de cor em triângulo e
+# --harmony analogous|complementary|monochromatic escolhe a harmonia
 cargo run --release -p photocraft-mobile-shell --example snapshot -- --out shots --new 1600x1200 --popover brushes
 # custo de CPU por frame (média e p95, em ms) ocioso, com a caneta pairando, pintando, no pan
 # com o dedo e com cada popover aberto; por padrão na tela do Tab S9 FE (920x576 pt a 2,5x).

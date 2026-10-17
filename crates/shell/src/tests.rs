@@ -637,6 +637,81 @@ fn recent_colors_are_saved_newest_first() {
 }
 
 #[test]
+fn the_harmony_choice_is_saved() {
+    let ctx = egui::Context::default();
+    let saved: Rc<RefCell<Vec<Harmony>>> = Rc::default();
+    let sink = saved.clone();
+    let mut s = shell().with_settings(ShellSettings::default(), Box::new(move |st| sink.borrow_mut().push(st.harmony)));
+    assert_eq!(s.settings.harmony, Harmony::Analogous, "analogous stays the default");
+    s.apply_act(&ctx, Act::Harmony(Harmony::Monochromatic));
+    assert_eq!(*saved.borrow(), [Harmony::Monochromatic]);
+}
+
+#[test]
+fn the_colour_lists_go_beside_the_picker_only_on_a_short_wide_screen() {
+    use studio::color_side_by_side;
+    let screen = |w: f32, h: f32| egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h));
+    // The Tab S9 FE+ in landscape at the 2.5× UI scale: a picker over the lists would shrink.
+    assert!(color_side_by_side(screen(1024.0, 640.0), ColorSelector::Square));
+    // Tall enough for the square, not for the triangle and its bars.
+    assert!(!color_side_by_side(screen(1280.0, 800.0), ColorSelector::Square));
+    assert!(color_side_by_side(screen(1280.0, 800.0), ColorSelector::Triangle));
+    // Portrait: one column, however short (it scrolls).
+    assert!(!color_side_by_side(screen(640.0, 1024.0), ColorSelector::Triangle));
+    assert!(!color_side_by_side(screen(400.0, 700.0), ColorSelector::Square));
+}
+
+#[test]
+fn a_colour_taken_from_the_palette_keeps_the_palette() {
+    use photocraft_ui_egui::color_picker_ui::hsv_to_rgb;
+    let ctx = egui::Context::default();
+    PhotocraftApp::setup_context(&ctx, Default::default());
+    let mut s = shell();
+    s.apply_act(&ctx, Act::Color([1.0, 0.0, 0.0]));
+    s.toggle_popover(Popover::Color);
+    popover_frame(&ctx, &mut s, vec![]);
+    let base = s.studio.palette_base;
+    assert!(base[0].abs() < 0.5 && (base[1] - 1.0).abs() < 1e-3 && (base[2] - 1.0).abs() < 1e-3, "made from the foreground: {base:?}");
+    // A neighbour becomes the foreground (and a recent colour); the palette doesn't move.
+    let [h, sat, v] = Harmony::Analogous.palette(base).colors[3];
+    let neighbour = hsv_to_rgb(h, sat, v);
+    s.apply_act(&ctx, Act::PaletteColor(neighbour));
+    popover_frame(&ctx, &mut s, vec![]);
+    let fg = s.app.session.tools.foreground;
+    assert!(fg.iter().zip(neighbour).all(|(a, b)| (a - b).abs() < 1e-3), "{fg:?}");
+    assert_eq!(s.settings.recent_colors.first(), Some(&neighbour));
+    assert_eq!(s.studio.palette_base, base, "the palette stays");
+    // A colour from anywhere else makes a new palette.
+    s.apply_act(&ctx, Act::Color([0.0, 0.0, 1.0]));
+    popover_frame(&ctx, &mut s, vec![]);
+    assert!((s.studio.palette_base[0] - 240.0).abs() < 0.5, "{:?}", s.studio.palette_base);
+}
+
+#[test]
+fn a_saved_palette_becomes_a_swatch_group_listed_first() {
+    let ctx = egui::Context::default();
+    let mut s = shell();
+    let before = s.app.session.presets.swatches.len();
+    let colors = vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    s.apply_act(&ctx, Act::SavePalette(Harmony::Complementary, colors.clone()));
+    s.apply_act(&ctx, Act::SavePalette(Harmony::Complementary, colors));
+    let name = studio::tr("Complementary", "Complementares");
+    let groups = &s.app.session.presets.swatches;
+    let names: Vec<&str> = groups[before..].iter().map(|g| g.name.as_str()).collect();
+    assert_eq!(names, [format!("{name} 1"), format!("{name} 2")], "a new group each time");
+    let swatches: Vec<&str> = groups[before].items.iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(swatches, ["#FF0000", "#00FF00", "#0000FF"]);
+    // Palettes shows the newest first, and a swatch tapped there becomes the foreground.
+    s.toggle_popover(Popover::Color);
+    let rows = s.swatch_rows();
+    assert_eq!(rows[0].group, format!("{name} 2"));
+    assert_eq!(rows[1].swatches[1].1, [0.0, 1.0, 0.0]);
+    s.apply_act(&ctx, Act::UseSwatch { group: format!("{name} 1"), name: "#00FF00".into() });
+    assert_eq!(s.app.session.tools.foreground, [0.0, 1.0, 0.0, 1.0]);
+    assert_eq!(s.settings.recent_colors.first(), Some(&[0.0, 1.0, 0.0]));
+}
+
+#[test]
 fn the_sensitivity_slider_moves_one_middle_point_and_reads_back() {
     use studio::{curve_for_sensitivity, sensitivity_of};
     assert_eq!(curve_for_sensitivity(0.0, [0.0, 1.0]), vec![[0.0, 0.0], [1.0, 1.0]], "the middle is linear");

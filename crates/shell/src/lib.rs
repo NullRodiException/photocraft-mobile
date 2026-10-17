@@ -32,6 +32,7 @@ use touch::Hold;
 /// Two fingers that leave the view this close to a right angle (degrees) snap it there.
 pub const SNAP_DEGREES: f32 = 5.0;
 
+pub use harmony::Harmony;
 pub use photocraft_mobile_modes;
 pub use services::{ColorSelector, ShellSettings};
 pub use studio::{BAR_HEIGHT, COMPACT_BELOW, Popover, SidePanel};
@@ -39,6 +40,7 @@ pub use touch::ToolKind;
 
 pub mod clipboard;
 pub mod crash;
+pub mod harmony;
 pub mod ime;
 pub mod memory;
 pub mod pen;
