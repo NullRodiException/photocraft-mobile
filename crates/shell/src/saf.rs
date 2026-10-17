@@ -133,13 +133,15 @@ impl Links {
 
 /// The picker's cache folders (`<cache>/saf-open/<id>`, `<cache>/saf-save/<id>`) that hold none of
 /// the `keep` paths: the recent files, and what crash recovery may still reopen. Everything else in
-/// them is a copy nothing will open again.
-pub fn stale_dirs(cache: &Path, keep: &[String]) -> Vec<PathBuf> {
+/// them is a copy nothing will open again, except the folders this launch made (an id at or past
+/// `launch`): a document another app sent may be on its way into one.
+pub fn stale_dirs(cache: &Path, keep: &[String], launch: i64) -> Vec<PathBuf> {
     let mut stale = Vec::new();
     for sub in [OPEN_DIR, SAVE_DIR] {
         let Ok(entries) = std::fs::read_dir(cache.join(sub)) else { continue };
         for dir in entries.filter_map(|e| e.ok().map(|e| e.path())) {
-            if !keep.iter().any(|k| Path::new(k).starts_with(&dir)) {
+            let current = dir.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<i64>().ok()).is_some_and(|id| id >= launch);
+            if !current && !keep.iter().any(|k| Path::new(k).starts_with(&dir)) {
                 stale.push(dir);
             }
         }
@@ -215,13 +217,14 @@ mod tests {
     #[test]
     fn stale_folders_are_the_ones_nothing_keeps() {
         let cache = temp_dir("cache");
-        for d in ["saf-open/1", "saf-open/2", "saf-save/3", "other/4"] {
+        for d in ["saf-open/1", "saf-open/2", "saf-save/3", "other/4", "saf-open/500", "saf-open/x"] {
             std::fs::create_dir_all(cache.join(d)).unwrap();
         }
         let kept = cache.join("saf-open/2/photo.psd").to_string_lossy().into_owned();
-        let stale = stale_dirs(&cache, &[kept]);
-        assert_eq!(stale, [cache.join("saf-open").join("1"), cache.join("saf-save").join("3")]);
-        assert!(stale_dirs(&cache.join("missing"), &[]).is_empty());
+        let stale = stale_dirs(&cache, &[kept], 500);
+        // 500 is this launch's: a document may be on its way into it.
+        assert_eq!(stale, [cache.join("saf-open").join("1"), cache.join("saf-open").join("x"), cache.join("saf-save").join("3")]);
+        assert!(stale_dirs(&cache.join("missing"), &[], 0).is_empty());
         let _ = std::fs::remove_dir_all(&cache);
     }
 }

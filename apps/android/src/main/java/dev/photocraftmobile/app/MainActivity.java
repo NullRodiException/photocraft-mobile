@@ -3,15 +3,21 @@ package dev.photocraftmobile.app;
 import android.app.ActivityManager;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Parcelable;
 import android.os.SystemClock;
 import android.provider.DocumentsContract;
+import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.system.ErrnoException;
 import android.system.Os;
@@ -20,6 +26,7 @@ import android.view.View;
 import android.webkit.MimeTypeMap;
 import android.widget.Toast;
 
+import androidx.core.content.FileProvider;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
@@ -61,6 +68,8 @@ import java.util.concurrent.Executors;
  *       app cache to open, and saves are written there and copied to the picked document. Each
  *       copy stays linked to its document (with the permission kept across restarts), so saving
  *       an opened document writes it back.
+ *   <li><b>Other apps.</b> "Open with" and "Share" from another app open the documents the same
+ *       way, and the Rust side's exported images go to the share sheet or the photo gallery.
  * </ul>
  */
 public class MainActivity extends GameActivity {
@@ -79,6 +88,8 @@ public class MainActivity extends GameActivity {
     private static final String VERSION_ENV = "PHOTOCRAFT_MOBILE_VERSION";
     /** The most of a crash report the share sheet gets (the Rust side keeps 64 KB). */
     private static final int SHARE_MAX_BYTES = 64 * 1024;
+    /** The gallery folder images are saved to (under Pictures). */
+    private static final String GALLERY_FOLDER = "PhotoCraft Mobile";
 
     private final PalmFilter palm = new PalmFilter();
 
@@ -104,6 +115,18 @@ public class MainActivity extends GameActivity {
         tellVersion();
         super.onCreate(savedInstanceState);
         hideSystemBars();
+        // A recreated activity already took its intent.
+        if (savedInstanceState == null) {
+            openIncoming(getIntent());
+        }
+    }
+
+    /** The app is running (singleTask) and another app asks it to open something. */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        openIncoming(intent);
     }
 
     /**
@@ -376,6 +399,13 @@ public class MainActivity extends GameActivity {
                     case "share":
                         shareText(f[1]);
                         break;
+                    case "image":
+                        if ("gallery".equals(f[1])) {
+                            saveToGallery(new File(f[2]));
+                        } else {
+                            sendImage(new File(f[2]));
+                        }
+                        break;
                     default:
                         break;
                 }
@@ -436,20 +466,7 @@ public class MainActivity extends GameActivity {
                 }
             }
             // Copying a large photo takes a moment: off the UI thread.
-            io.execute(() -> {
-                StringBuilder paths = new StringBuilder();
-                File dir = new File(getCacheDir(), "saf-open/" + id);
-                for (Uri uri : uris) {
-                    File target = new File(dir, safeName(displayName(uri)));
-                    if (copy(uri, target)) {
-                        // Linked before PhotoCraft opens it, so its first Save already goes back.
-                        boolean writable = keepAccess(uri, grant) && supportsWrite(uri);
-                        nativeLink(target.getAbsolutePath(), uri.toString(), writable ? 1 : 0);
-                        paths.append(target.getAbsolutePath()).append('\n');
-                    }
-                }
-                nativeOpenResult(id, paths.toString());
-            });
+            io.execute(() -> nativeOpenResult(id, copyIn(uris, grant, id)));
         } else if (requestCode == REQUEST_SAVE && saveRequest >= 0) {
             long id = saveRequest;
             saveRequest = -1;
@@ -470,8 +487,93 @@ public class MainActivity extends GameActivity {
     }
 
     /**
-     * Keeps the permission the picker granted to {@code uri} across restarts, so a later save still
-     * reaches the document. Returns whether that permission includes writing.
+     * Copies the documents into the cache folder {@code saf-open/<id>} and links each copy to its
+     * document; returns the copies' paths, one per line. Off the UI thread.
+     */
+    private String copyIn(List<Uri> uris, int grant, long id) {
+        StringBuilder paths = new StringBuilder();
+        File dir = new File(getCacheDir(), "saf-open/" + id);
+        for (Uri uri : uris) {
+            File target = unusedFile(dir, safeName(displayName(uri)));
+            if (copy(uri, target)) {
+                // Linked before PhotoCraft opens it, so its first Save already goes back.
+                boolean writable = keepAccess(uri, grant) && supportsWrite(uri);
+                nativeLink(target.getAbsolutePath(), uri.toString(), writable ? 1 : 0);
+                paths.append(target.getAbsolutePath()).append('\n');
+            }
+        }
+        return paths.toString();
+    }
+
+    /** {@code dir/name}, or {@code dir/name (2)}… when two documents share a name. */
+    private static File unusedFile(File dir, String name) {
+        File file = new File(dir, name);
+        int dot = name.lastIndexOf('.');
+        String stem = dot > 0 ? name.substring(0, dot) : name;
+        String ext = dot > 0 ? name.substring(dot) : "";
+        for (int n = 2; file.exists(); n++) {
+            file = new File(dir, stem + " (" + n + ")" + ext);
+        }
+        return file;
+    }
+
+    /**
+     * "Open with" and "Share" from another app: the documents are copied into the cache like the
+     * picker's, and the Rust side opens them (files.rs). Another app's grant usually ends with
+     * this activity, so a copy is writable only when the permission could be kept.
+     */
+    private void openIncoming(Intent intent) {
+        if (intent == null || (intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0) {
+            return;
+        }
+        List<Uri> uris = incomingUris(intent);
+        if (uris.isEmpty()) {
+            return;
+        }
+        int grant = intent.getFlags() & GRANT_READ_WRITE;
+        io.execute(() -> {
+            try {
+                String paths = copyIn(uris, grant, nativeNextId());
+                if (paths.isEmpty()) {
+                    toast(text("Couldn't open the file", "Não foi possível abrir o arquivo"));
+                } else {
+                    nativeOpenFiles(paths);
+                }
+            } catch (UnsatisfiedLinkError e) {
+                // The library isn't loaded: the app couldn't open anything anyway.
+            }
+        });
+    }
+
+    /** The documents an "Open with" (VIEW) or "Share" (SEND, SEND_MULTIPLE) intent carries. */
+    @SuppressWarnings("deprecation")
+    private static List<Uri> incomingUris(Intent intent) {
+        List<Uri> uris = new ArrayList<>();
+        String action = intent.getAction();
+        if (Intent.ACTION_VIEW.equals(action) && intent.getData() != null) {
+            uris.add(intent.getData());
+        } else if (Intent.ACTION_SEND.equals(action)) {
+            Parcelable stream = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            if (stream instanceof Uri) {
+                uris.add((Uri) stream);
+            }
+        } else if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+            ArrayList<Parcelable> streams = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+            if (streams != null) {
+                for (Parcelable stream : streams) {
+                    if (stream instanceof Uri) {
+                        uris.add((Uri) stream);
+                    }
+                }
+            }
+        }
+        return uris;
+    }
+
+    /**
+     * Keeps the permission granted to {@code uri} across restarts, so a later save still reaches
+     * the document. Returns whether writing was kept: a write grant that can't be kept ends with
+     * this activity, and a save after that wouldn't reach the document.
      */
     private boolean keepAccess(Uri uri, int grant) {
         int modes = grant & GRANT_READ_WRITE;
@@ -486,7 +588,82 @@ public class MainActivity extends GameActivity {
         } catch (SecurityException e) {
             // Only for this session.
         }
-        return (modes & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0;
+        return false;
+    }
+
+    /** An image the Rust side exported (share.rs), offered to the share sheet. */
+    private void sendImage(File file) {
+        Uri uri;
+        try {
+            uri = FileProvider.getUriForFile(this, getPackageName() + ".files", file);
+        } catch (IllegalArgumentException e) {
+            toast(text("Couldn't share ", "Não foi possível compartilhar ") + file.getName());
+            return;
+        }
+        Intent send = new Intent(Intent.ACTION_SEND);
+        send.setType("image/png");
+        send.putExtra(Intent.EXTRA_STREAM, uri);
+        // The ClipData carries the read grant to the app picked in the chooser (and its preview).
+        send.setClipData(ClipData.newRawUri(file.getName(), uri));
+        send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        Intent chooser = Intent.createChooser(send, text("Share image", "Compartilhar imagem"));
+        // Sending the image back to this app would only open a copy of it.
+        chooser.putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, new android.content.ComponentName[] {new android.content.ComponentName(this, MainActivity.class)});
+        try {
+            startActivity(chooser);
+        } catch (ActivityNotFoundException e) {
+            toast(text("No app can receive it", "Nenhum app pode recebê-lo"));
+        }
+    }
+
+    /**
+     * An image the Rust side exported (share.rs), saved into the gallery (Pictures/PhotoCraft
+     * Mobile). Android 10 and later only: MediaStore then needs no storage permission.
+     */
+    private void saveToGallery(File file) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            toast(text("Saving to the gallery needs Android 10 or later. Use Share image… instead.",
+                    "Salvar na Galeria precisa do Android 10 ou mais novo. Use Compartilhar imagem…"));
+            return;
+        }
+        io.execute(() -> {
+            ContentResolver resolver = getContentResolver();
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.MediaColumns.DISPLAY_NAME, file.getName());
+            values.put(MediaStore.MediaColumns.MIME_TYPE, "image/png");
+            values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/" + GALLERY_FOLDER);
+            // Hidden from the gallery until it is whole.
+            values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+            Uri item = null;
+            boolean ok = false;
+            try {
+                item = resolver.insert(MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values);
+                if (item != null) {
+                    try (InputStream in = new FileInputStream(file); OutputStream out = resolver.openOutputStream(item)) {
+                        ok = out != null && pipe(in, out);
+                    }
+                    ContentValues done = new ContentValues();
+                    done.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                    resolver.update(item, done, null, null);
+                }
+            } catch (IOException | RuntimeException e) {
+                ok = false;
+            }
+            if (!ok && item != null) {
+                try {
+                    resolver.delete(item, null, null);
+                } catch (RuntimeException e) {
+                    // Left pending: the system removes it.
+                }
+            }
+            toast(ok ? text("Saved to the gallery: ", "Salvo na Galeria: ") + file.getName()
+                    : text("Couldn't save to the gallery", "Não foi possível salvar na Galeria"));
+        });
+    }
+
+    /** A short message, from any thread. */
+    private void toast(String message) {
+        runOnUiThread(() -> Toast.makeText(this, message, Toast.LENGTH_SHORT).show());
     }
 
     /** Offers a text file of the app's (a crash report) to the share sheet, as text. */
@@ -646,4 +823,10 @@ public class MainActivity extends GameActivity {
 
     /** files.rs: the cache file {@code path} stands for the picked document {@code uri}. */
     private static native void nativeLink(String path, String uri, int writable);
+
+    /** files.rs: a new cache folder id for opened documents. */
+    private static native long nativeNextId();
+
+    /** files.rs: open these copies (one path per line), sent by another app. */
+    private static native void nativeOpenFiles(String paths);
 }

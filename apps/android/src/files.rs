@@ -20,40 +20,76 @@
 //!
 //! At start-up, [`clean_cache`] deletes the cache copies that nothing will open again.
 //!
+//! Other apps: "Open with" and "Share" reach `MainActivity`, which copies the documents into the
+//! cache the same way and hands the paths over (`nativeOpenFiles`); PhotoCraft opens them as OS
+//! requests ([`os_events`]). The other way, the shell's exported images ([`share_image`]) go to
+//! the share sheet or the gallery.
+//!
 //! Requests travel as tab-separated lines (`open\t<id>\t<multiple>`, `save\t<id>\t<name>`,
-//! `export\t<path>\t<uri>`, `release\t<uri>`, `share\t<path>`), so the JNI calls carry only strings
-//! and numbers.
+//! `export\t<path>\t<uri>`, `release\t<uri>`, `share\t<path>`, `image\t<send|gallery>\t<path>`),
+//! so the JNI calls carry only strings and numbers.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use jni::EnvUnowned;
 use jni::objects::{JClass, JString};
 use photocraft_mobile_shell::saf::{Links, WriteTarget};
-use photocraft_ui_egui::{FileDialogAnswer, FileDialogReply, FileDialogRequest};
+use photocraft_mobile_shell::share::ShareTarget;
+use photocraft_ui_egui::{FileDialogAnswer, FileDialogReply, FileDialogRequest, OsEvent};
 
 /// Lines waiting for `MainActivity`.
 static REQUESTS: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 /// Dialogs waiting for the user, by request id.
 static WAITING: Mutex<Vec<(i64, FileDialogReply)>> = Mutex::new(Vec::new());
 /// Request ids also name the cache folders of opened and saved documents, which outlive a launch
-/// (recent files, links): [`init`] starts them at the time, so a new launch never reuses one.
+/// (recent files, links): [`next_id`] keeps them at or past the time, so a new launch never
+/// reuses one.
 static NEXT_ID: AtomicI64 = AtomicI64::new(1);
 /// The cache copies of picked documents (loaded by [`init`]).
 static LINKS: Mutex<Option<Links>> = Mutex::new(None);
 /// Where the links are saved (the settings folder).
 static CONFIG_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+/// Documents other apps sent, waiting for the next frame.
+static INCOMING: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static CTX: OnceLock<egui::Context> = OnceLock::new();
 
 /// Load the saved links from `config_dir`; call once before the app starts.
 pub fn init(config_dir: Option<PathBuf>) {
+    launch();
     let links = Links::load(config_dir.as_deref());
     log::info!("{} picked document(s) linked", links.len());
     *LINKS.lock().unwrap_or_else(PoisonError::into_inner) = Some(links);
     let _ = CONFIG_DIR.set(config_dir);
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().and_then(|d| i64::try_from(d.as_millis()).ok()).unwrap_or(1);
-    NEXT_ID.fetch_max(now, Ordering::Relaxed);
+}
+
+/// Repaint through `ctx` when another app sends documents, so a frame opens them.
+pub fn install(ctx: egui::Context) {
+    let _ = CTX.set(ctx);
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().and_then(|d| i64::try_from(d.as_millis()).ok()).unwrap_or(1)
+}
+
+/// When this launch began (ms): its request ids are at or past it, an earlier launch's before it.
+fn launch() -> i64 {
+    static LAUNCH: OnceLock<i64> = OnceLock::new();
+    *LAUNCH.get_or_init(now_ms)
+}
+
+/// A new request id, never one an earlier launch used.
+fn next_id() -> i64 {
+    NEXT_ID.fetch_max(launch().max(now_ms()), Ordering::Relaxed);
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// PhotoCraft's `os_events` service: the documents other apps sent since the last frame.
+pub fn os_events() -> Vec<OsEvent> {
+    let paths = std::mem::take(&mut *INCOMING.lock().unwrap_or_else(PoisonError::into_inner));
+    if paths.is_empty() { Vec::new() } else { vec![OsEvent::Open(paths)] }
 }
 
 fn with_links<R>(f: impl FnOnce(&mut Links) -> R) -> R {
@@ -78,23 +114,50 @@ pub fn export(path: &str, uri: &str) {
 }
 
 /// Offers the text file at `path` (a crash report) to the system's share sheet.
-pub fn share(path: &std::path::Path) {
+pub fn send_report(path: &Path) {
     push(format!("share\t{}", clean(&path.to_string_lossy())));
+}
+
+/// The shell's `ShareFn`: the exported image at `path` goes to the share sheet or the gallery.
+pub fn share_image(target: ShareTarget, path: &Path) {
+    let target = match target {
+        ShareTarget::Send => "send",
+        ShareTarget::Gallery => "gallery",
+    };
+    push(format!("image\t{target}\t{}", clean(&path.to_string_lossy())));
 }
 
 /// `MainActivity` puts the app's cache folder here before the library starts.
 const CACHE_ENV: &str = "PHOTOCRAFT_MOBILE_CACHE";
+/// The cache folder for images exported to share (`res/xml/file_paths.xml` names it too).
+const SHARE_DIR: &str = "share";
+
+/// The app's cache folder, when `MainActivity` said where it is.
+fn cache_dir() -> Option<PathBuf> {
+    std::env::var_os(CACHE_ENV).filter(|c| !c.is_empty()).map(PathBuf::from)
+}
+
+/// Where the shell exports images to share (see [`share_image`]).
+pub fn share_dir() -> Option<PathBuf> {
+    cache_dir().map(|c| c.join(SHARE_DIR))
+}
 
 /// Deletes the picked documents' cache copies that nothing will open again: every folder under
 /// `saf-open/` and `saf-save/` that holds none of `keep` (the recent files, and the documents crash
 /// recovery may reopen). Their links go too, and `MainActivity` gives back the URI permissions no
-/// other link uses.
+/// other link uses. Images exported to share last time go too.
 pub fn clean_cache(keep: &[String]) {
-    let Some(cache) = std::env::var_os(CACHE_ENV).filter(|c| !c.is_empty()).map(PathBuf::from) else {
+    let Some(cache) = cache_dir() else {
         log::warn!("{CACHE_ENV} isn't set: the picked documents' cache copies stay");
         return;
     };
-    let stale = photocraft_mobile_shell::saf::stale_dirs(&cache, keep);
+    let shared = cache.join(SHARE_DIR);
+    if shared.exists()
+        && let Err(e) = std::fs::remove_dir_all(&shared)
+    {
+        log::warn!("couldn't delete {}: {e}", shared.display());
+    }
+    let stale = photocraft_mobile_shell::saf::stale_dirs(&cache, keep, launch());
     if stale.is_empty() {
         return;
     }
@@ -127,7 +190,7 @@ fn clean(s: &str) -> String {
 
 /// PhotoCraft's `file_dialog` service on Android.
 pub fn file_dialog(request: FileDialogRequest, _frame: Option<&eframe::Frame>, reply: FileDialogReply) {
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let id = next_id();
     let line = match request {
         FileDialogRequest::Open { multiple, .. } => format!("open\t{id}\t{}", u8::from(multiple)),
         FileDialogRequest::Save { suggested } => {
@@ -228,6 +291,40 @@ extern "system" fn Java_dev_photocraftmobile_app_MainActivity_nativeLink<'caller
             links.link(&path, &uri, writable != 0);
             links.save(CONFIG_DIR.get().and_then(|d| d.as_deref()));
         });
+        Ok(())
+    })
+    .resolve::<jni::errors::LogErrorAndDefault>()
+}
+
+/// `private static native long nativeNextId()`: a new cache folder id for documents another app
+/// sent (see [`next_id`]).
+// No arguments and no JNI environment use: only the unmangled export is unsafe.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_photocraftmobile_app_MainActivity_nativeNextId(_env: *mut std::ffi::c_void, _class: *mut std::ffi::c_void) -> i64 {
+    next_id()
+}
+
+/// `private static native void nativeOpenFiles(String paths)`: the copies of the documents another
+/// app sent ("Open with", "Share"), one path per line, for PhotoCraft to open.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_photocraftmobile_app_MainActivity_nativeOpenFiles<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    paths: JString<'caller>,
+) {
+    env.with_env(|env| -> Result<(), jni::errors::Error> {
+        if paths.is_null() {
+            return Ok(());
+        }
+        let text = paths.try_to_string(env)?;
+        let opened: Vec<String> = text.lines().filter(|l| !l.is_empty()).map(str::to_string).collect();
+        log::info!("another app sent {} document(s)", opened.len());
+        INCOMING.lock().unwrap_or_else(PoisonError::into_inner).extend(opened);
+        if let Some(ctx) = CTX.get() {
+            ctx.request_repaint();
+        }
         Ok(())
     })
     .resolve::<jni::errors::LogErrorAndDefault>()

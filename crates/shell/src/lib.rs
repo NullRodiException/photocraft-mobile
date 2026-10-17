@@ -43,6 +43,7 @@ pub mod pen;
 pub mod saf;
 pub mod scrub;
 pub mod services;
+pub mod share;
 pub mod studio;
 pub mod touch;
 
@@ -155,6 +156,8 @@ pub struct ModeShell {
     /// The report the last crash left (see [`crash`]), and how to send it.
     crash_report: Option<std::path::PathBuf>,
     send_report: Option<SendReportFn>,
+    /// Share image… and Save to Gallery, where the platform has them.
+    sharing: Option<share::Sharing>,
     scrub: scrub::ValueScrub,
     /// This frame's input ended a press the user made (a tap or a lift), not one the shell did.
     tapped: bool,
@@ -194,6 +197,7 @@ impl ModeShell {
             platform_events: None,
             crash_report: None,
             send_report: None,
+            sharing: None,
             scrub: scrub::ValueScrub::default(),
             tapped: false,
             last_focus: None,
@@ -221,6 +225,34 @@ impl ModeShell {
         self.crash_report = Some(path);
         self.send_report = send;
         self
+    }
+
+    /// Actions › Quick offers to share the open image and save it to the gallery: exports go into
+    /// folders under `dir`, then to `share` (see [`share`]).
+    pub fn with_share(mut self, dir: std::path::PathBuf, share: share::ShareFn) -> Self {
+        self.sharing = Some(share::Sharing::new(dir, share));
+        self
+    }
+
+    /// The platform can share images; `Some(true)` while an export is under way.
+    pub(crate) fn sharing_busy(&self) -> Option<bool> {
+        self.sharing.as_ref().map(share::Sharing::busy)
+    }
+
+    /// Export the active document for `target` (Actions › Quick).
+    pub(crate) fn share(&mut self, ctx: &egui::Context, target: share::ShareTarget) {
+        let (Some(sharing), Some(doc)) = (self.sharing.as_mut(), self.app.session.active().map(|d| d.doc.clone())) else { return };
+        let wake = ctx.clone();
+        if let Err(e) = sharing.start(doc, target, move || wake.request_repaint()) {
+            log::warn!("couldn't share the image: {e}");
+        }
+    }
+
+    /// Tells the user when an export for sharing failed.
+    fn shared(&mut self) {
+        let Some(Err(e)) = self.sharing.as_mut().and_then(share::Sharing::poll) else { return };
+        let title = studio::tr("Couldn't export the image", "Não foi possível exportar a imagem");
+        photocraft_ui_egui::notices::post(&mut self.app, title, vec![e], true, None);
     }
 
     /// The report a crash left can be sent (Actions › Quick).
@@ -469,6 +501,7 @@ fn shortcut_key(mode: Mode) -> Key {
 impl eframe::App for ModeShell {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.platform_events();
+        self.shared();
         self.shortcuts(ctx);
         self.apply_gesture(ctx);
         for wait in [self.scrub_wake.take(), self.gesture_wake.take()].into_iter().flatten() {

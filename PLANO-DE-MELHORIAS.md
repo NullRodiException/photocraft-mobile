@@ -26,7 +26,7 @@ Uma regra vale para todos os itens: nada aqui altera o `../photocraft`. Quando a
 | 9 | Latência do traço ✅ (passos 1 e 2; o 3 depende do PhotoCraft) | P1 | M–G |
 | 10 | Cache de arquivos que só cresce ✅ | P1 | P |
 | 11 | Arquivos recentes que sobrevivem ao cache | P1 | M |
-| 12 | Abrir com, Compartilhar e Salvar na Galeria | P1 | M |
+| 12 | Abrir com, Compartilhar e Salvar na Galeria ✅ | P1 | M |
 | 13 | Área de transferência de imagens e links | P2 | M |
 | 14 | Layout para celular em retrato | P2 | M |
 | 15 | Barra lateral à direita | P2 | P |

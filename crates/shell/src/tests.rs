@@ -428,6 +428,42 @@ fn a_crash_report_is_announced_and_sent_from_actions() {
     assert!(!quiet.can_send_report());
 }
 
+static SHARED: std::sync::Mutex<Vec<(share::ShareTarget, std::path::PathBuf)>> = std::sync::Mutex::new(Vec::new());
+
+fn record_share(target: share::ShareTarget, path: &std::path::Path) {
+    SHARED.lock().unwrap().push((target, path.to_path_buf()));
+}
+
+#[test]
+fn sharing_exports_the_image_as_a_png_for_the_platform() {
+    use share::ShareTarget;
+    let dir = std::env::temp_dir().join(format!("photocraft-mobile-share-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let ctx = egui::Context::default();
+    assert_eq!(shell().sharing_busy(), None, "nothing to offer without the platform's share");
+    let mut s = shell().with_share(dir.clone(), record_share);
+    // No document: nothing to share.
+    s.apply_act(&ctx, Act::Share(ShareTarget::Send));
+    assert_eq!(s.sharing_busy(), Some(false));
+    s.app.run("file.new", json!({"width": 32, "height": 24, "name": "Sketch"})).unwrap();
+    let notices = s.app.ui.notices.len();
+    s.apply_act(&ctx, Act::Share(ShareTarget::Gallery));
+    assert_eq!(s.sharing_busy(), Some(true));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while s.sharing_busy() == Some(true) {
+        assert!(std::time::Instant::now() < deadline, "the export never finished");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        s.shared();
+    }
+    assert_eq!(s.app.ui.notices.len(), notices, "a successful export says nothing");
+    let shared = SHARED.lock().unwrap().clone();
+    let [(target, path)] = shared.as_slice() else { panic!("{shared:?}") };
+    assert_eq!(*target, ShareTarget::Gallery);
+    assert!(path.starts_with(&dir) && path.file_name().is_some_and(|n| n == "Sketch.png"), "{}", path.display());
+    assert!(std::fs::read(path).unwrap().starts_with(b"\x89PNG"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn without_a_document_a_finger_taps_the_start_screen() {
     use eframe::App;

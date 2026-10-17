@@ -16,6 +16,8 @@
 //! (held: the Eraser) go into PhotoCraft's stylus feed, and hovering moves the brush outline.
 //!
 //! Files: open and save go through the system file picker (`files`, the Storage Access Framework).
+//! Other apps can send documents ("Open with", "Share"), and the image can go to their share sheet
+//! or the gallery.
 //!
 //! The on-screen keyboard: its text reaches egui through `ime`, since winit 0.30 drops
 //! GameActivity's text input events.
@@ -44,11 +46,12 @@ mod android {
     use winit::platform::android::activity::AndroidApp;
     use winit::platform::android::activity::input::Axis;
 
-    /// The platform services: the shared ones, the system file picker, and saves that go on to
-    /// the document the picker chose.
+    /// The platform services: the shared ones, the system file picker, saves that go on to the
+    /// document the picker chose, and documents other apps send.
     fn android_services(config_dir: Option<std::path::PathBuf>) -> Services {
         Services {
             file_dialog: Some(Box::new(crate::files::file_dialog)),
+            os_events: Some(Box::new(crate::files::os_events)),
             write: Some(Box::new(|path: &str, bytes: &[u8]| {
                 // The cache copy of a picked document is written, then copied to the document. A copy
                 // that can't reach its document refuses the write rather than look saved.
@@ -143,6 +146,7 @@ mod android {
                 app.ui.panels.rail = false;
                 crate::pen::install(app.stylus.feed.clone(), cc.egui_ctx.clone());
                 crate::lifecycle::install(cc.egui_ctx.clone());
+                crate::files::install(cc.egui_ctx.clone());
                 crate::ime::install(ime_app, cc.egui_ctx.clone());
                 let modes = services::load_modes(config_dir.as_deref());
                 let settings = services::load_settings(config_dir.as_deref());
@@ -156,9 +160,12 @@ mod android {
                         crate::ime::input_hook(raw);
                     }))
                     .with_platform_events(Box::new(crate::lifecycle::events));
+                if let Some(dir) = crate::files::share_dir() {
+                    shell = shell.with_share(dir, crate::files::share_image);
+                }
                 if let Some(report) = crash_report {
                     log::warn!("the last run crashed: report in {}", report.display());
-                    shell = shell.with_crash_report(report, Some(Box::new(crate::files::share)));
+                    shell = shell.with_crash_report(report, Some(Box::new(crate::files::send_report)));
                 }
                 Ok(Box::new(shell))
             }),

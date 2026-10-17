@@ -110,6 +110,8 @@ pub(crate) enum Act {
     PressureOpacity(bool),
     /// Send the report the last crash left.
     SendCrashReport,
+    /// Export the image for another app, or for the gallery.
+    Share(crate::share::ShareTarget),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -819,6 +821,10 @@ impl ModeShell {
                 self.studio.popover = None;
                 self.send_report();
             }
+            Act::Share(target) => {
+                self.studio.popover = None;
+                self.share(ctx, target);
+            }
         }
     }
 
@@ -1275,6 +1281,17 @@ impl ModeShell {
                 && list_row(ui, t, &item_label(item), None, item.enabled, None).clicked()
             {
                 acts.push(Act::Command(id.into()));
+            }
+        }
+        if let Some(busy) = self.sharing_busy() {
+            use crate::share::ShareTarget;
+            let ready = !busy && self.app.session.active().is_some();
+            for (target, label) in
+                [(ShareTarget::Send, tr("Share image…", "Compartilhar imagem…")), (ShareTarget::Gallery, tr("Save to Gallery", "Salvar na Galeria"))]
+            {
+                if list_row(ui, t, label, None, ready, None).clicked() {
+                    acts.push(Act::Share(target));
+                }
             }
         }
         section(ui, t, tr("View", "Exibir"));

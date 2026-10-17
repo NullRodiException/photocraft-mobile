@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The app cache folders other apps may read through the FileProvider: images exported for the
+     share sheet (Actions › Quick › Share image…). -->
+<paths>
+    <cache-path name="share" path="share/" />
+</paths>

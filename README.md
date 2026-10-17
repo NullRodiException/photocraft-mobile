@@ -87,6 +87,7 @@ crates/shell   ModeShell: embrulha o PhotocraftApp na interface (egui).
                studio.rs: barra superior, barra lateral, popovers, seletores de cor.
                touch.rs: gestos de dedo no canvas (pan, pinça, desfazer/refazer).
                services.rs: serviços comuns (codecs, gravação atômica, configurações).
+               share.rs: exporta a imagem para compartilhar ou salvar na galeria.
                examples/snapshot.rs renderiza offscreen um PNG por modo (e popovers).
                examples/frame_bench.rs mede o custo de CPU dos frames, sem janela.
 apps/desktop   executável `photocraft-mobile` (eframe/wgpu) para desenvolver no PC.
@@ -322,6 +323,22 @@ Access Framework, `apps/android/src/files.rs` + `MainActivity.java`):
 - Pedidos e respostas trafegam como linhas de texto pelo JNI (a `MainActivity` consulta os pedidos
   a cada 150 ms), sem nenhum bloco `unsafe`.
 - Escolher pasta ainda não é suportado.
+
+### Outros apps: Abrir com, Compartilhar, Galeria
+
+- **Entrada:** o app aparece em "Abrir com" (imagens e `.psd`) e em "Compartilhar" de outros apps
+  (uma imagem ou várias). A `MainActivity` copia os documentos para `cache/saf-open/<id>`, como no
+  Abrir, e o PhotoCraft os abre pelo serviço `os_events` (`files.rs`), com o app já aberto ou não.
+  A permissão que outro app concede costuma acabar com a activity, então a cópia só grava de volta
+  no original quando a permissão pôde ser guardada; senão, Salvar pede Salvar Como.
+- **Saída:** Ações › Rápido › **Compartilhar imagem…** e **Salvar na Galeria** exportam o documento
+  ativo como PNG (achatado, como Exportar) numa thread (`crates/shell/src/share.rs`), em
+  `cache/share/<n>/`. Compartilhar abre a folha do sistema por um `FileProvider`; Salvar na Galeria
+  grava em `Pictures/PhotoCraft Mobile` pelo `MediaStore`, sem pedir permissão (Android 10 ou
+  mais novo; antes disso, o app sugere Compartilhar). As exportações são apagadas na próxima
+  abertura do app.
+- A limpeza do cache ao abrir o app não toca nas pastas criadas nesta execução, porque um
+  documento compartilhado pode estar sendo copiado para uma delas.
 
 ### Dedos: navegam, não pintam
 
